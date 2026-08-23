@@ -3,6 +3,7 @@
 // config is evaluated at decorator/import time, before Nest's own
 // ConfigModule has a chance to run) reads env vars.
 import 'dotenv/config';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
@@ -55,6 +56,17 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   app.setGlobalPrefix('api'); // -> e.g. /api/auth/login
+
+    if (process.env.SWAGGER_ENABLED === 'true') {
+    const config = new DocumentBuilder()
+      .setTitle('Rosal Safety OMS API')
+      .setDescription('Backend contract for the Web Portal and Android App')
+      .setVersion('1.1')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api/docs', app, document);
+  }
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port);
