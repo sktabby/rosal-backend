@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+import { SalesOrdersService } from './sales-orders.service';
+import { SalesOrdersController } from './sales-orders.controller';
+import { OrderEventsModule } from '../order-events/order-events.module';
+import { RealtimeModule } from '../realtime/realtime.module';
+
+@Module({
+  imports: [OrderEventsModule, RealtimeModule],
+  controllers: [SalesOrdersController],
+  providers: [SalesOrdersService],
+  exports: [SalesOrdersService],
+})
+export class SalesOrdersModule {}

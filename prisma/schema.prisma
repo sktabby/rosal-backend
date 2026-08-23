@@ -1,0 +1,455 @@
+// Rosal Safety OMS — Prisma schema
+// Source of truth: Backend reference doc. Mirrors all entities, enums,
+// and constraints described there (10 tables, incl. OrderEvent audit log).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────────────────────────
+// ENUMS
+// ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SELLER
+  DISPATCHER
+  ACCOUNTS
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum TransportType {
+  GODOWN
+  DOOR_DELIVERY
+}
+
+enum PiStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+  ARCHIVED
+}
+
+enum SalesOrderStatus {
+  PENDING
+  PROCESSING
+  DISPATCHED
+  REJECTED
+  CANCELLED
+  BILLED
+}
+
+enum BillStatus {
+  PENDING
+  INVOICED
+}
+
+enum GstType {
+  CGST_SGST
+  IGST
+}
+
+// ────────────────────────────────────────────────────────────────────
+// CORE MASTER DATA
+// ────────────────────────────────────────────────────────────────────
+
+model User {
+  id                          String     @id @default(uuid())
+  role                        UserRole
+  employeeCode                String     @unique // permanent — never reused, checked incl. soft-deleted history
+  generatedId                 String     @unique // firstName + last 5 digits of employeeCode (display ID)
+  firstName                   String
+  lastName                    String
+  phone                       String
+  email                       String
+  passwordHash                String
+  status                      UserStatus @default(ACTIVE)
+
+  // Dispatcher only — enforces 1:1 Dispatcher<->FactoryUnit at the DB level
+  assignedFactoryUnit         FactoryUnit? @relation("FactoryUnitDispatcher")
+
+  lastLoginAt                 DateTime?
+  lastLoginDevice             String?
+  pushNotificationsEnabled    Boolean    @default(true)
+  emailNotificationsEnabled   Boolean    @default(true)
+
+  deletedAt                   DateTime?  // soft delete
+
+  createdAt                   DateTime   @default(now())
+  updatedAt                   DateTime   @updatedAt
+
+  // Relations (as actor)
+  clientsAsSeller             Client[]         @relation("SellerClients")
+  proformaInvoices            ProformaInvoice[] @relation("SellerPIs")
+  salesOrdersAsSeller         SalesOrder[]     @relation("SellerOrders")
+  billsCreated                Bill[]           @relation("SellerBills")
+  invoicesCreated             Invoice[]        @relation("AccountsInvoices")
+  orderEvents                 OrderEvent[]     @relation("ActorEvents")
+  otpCodes                    OtpCode[]
+  usersCreated                User[]           @relation("CreatedBy")
+  createdBy                   User?            @relation("CreatedBy", fields: [createdById], references: [id])
+  createdById                 String?
+
+  @@index([role])
+  @@index([status])
+}
+
+model Client {
+  id                String    @id @default(uuid())
+  firstName         String
+  lastName          String
+  phone             String
+  gstin             String    @unique
+  address           String
+
+  assignedSeller    User      @relation("SellerClients", fields: [assignedSellerId], references: [id])
+  assignedSellerId  String
+
+  deletedAt         DateTime?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  proformaInvoices  ProformaInvoice[]
+  bills             Bill[]
+
+  @@index([assignedSellerId])
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  name        String
+  unit        String // e.g. KG, PCS, LTR
+  taxPercent  Decimal   @db.Decimal(5, 2) // 0/5/12/18/28
+  hsnCode     String // hard-validated: exactly 12 digits (service-layer + DB check constraint)
+
+  deletedAt   DateTime?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  piLineItems   PiLineItem[]
+  billLineItems BillLineItem[]
+
+  @@index([name])
+}
+
+model Transport {
+  id         String    @id @default(uuid())
+  name       String
+  // v1.1: transporter's own GSTIN — appears on the invoice's e-Way Bill /
+  // Transporter ID section. Optional since not every transport option is a
+  // GST-registered third party (e.g. self-pickup/godown).
+  gstin      String?
+
+  deletedAt  DateTime?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  proformaInvoices ProformaInvoice[]
+  invoices         Invoice[]
+}
+
+model FactoryUnit {
+  id                    String    @id @default(uuid())
+  name                  String
+  // v1.1: used as the Invoice's "Dispatch From" address instead of the
+  // default company address, when the order ships from this unit.
+  address               String?
+
+  // Enforces 1 dispatcher : 1 factory unit at the DB level
+  assignedDispatcher    User      @relation("FactoryUnitDispatcher", fields: [assignedDispatcherId], references: [id])
+  assignedDispatcherId  String    @unique
+
+  deletedAt             DateTime?
+
+  createdAt             DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  salesOrders           SalesOrder[]
+}
+
+// Singleton — constant header block on every PI / Bill / Invoice
+model CompanySettings {
+  id                  String   @id @default(uuid())
+  name                String   @default("Rosal Safety Private Limited")
+  gstin               String   @default("27AANCR7712A1ZF")
+  address             String   @default("Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302, Maharashtra")
+
+  // v1.1: feed the real Invoice PDF's statutory/banking details block.
+  udyamNumber         String? // e.g. UDYAM-MH-18-0365859
+  panNumber           String? // e.g. AANCR7712A
+  bankName            String? // e.g. State Bank of India
+  bankAccountNo       String?
+  bankIFSC            String?
+  bankBranch          String?
+  authorisedSignatory String? // name shown under the digital signature line
+
+  updatedAt DateTime @updatedAt
+}
+
+// ────────────────────────────────────────────────────────────────────
+// AUTH SUPPORT
+// ────────────────────────────────────────────────────────────────────
+
+model OtpCode {
+  id            String   @id @default(uuid())
+  user          User     @relation(fields: [userId], references: [id])
+  userId        String
+  codeHash      String // OTP stored hashed, never plaintext
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  attemptCount  Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+// ────────────────────────────────────────────────────────────────────
+// CORE BUSINESS LIFECYCLE: PI -> SalesOrder -> Bill -> Invoice
+// ────────────────────────────────────────────────────────────────────
+
+model ProformaInvoice {
+  id               String        @id @default(uuid())
+  piNumber         String        @unique // RSPL/<FY>/<series>, e.g. RSPL/26-27/041
+
+  client           Client        @relation(fields: [clientId], references: [id])
+  clientId         String
+
+  seller           User          @relation("SellerPIs", fields: [sellerId], references: [id])
+  sellerId         String
+
+  shipToAddress    String
+  modeOfPayment    String
+
+  transport        Transport     @relation(fields: [transportId], references: [id])
+  transportId      String
+  transportType    TransportType
+
+  status           PiStatus      @default(DRAFT)
+  // true while a live (non-cancelled) SalesOrder references this PI.
+  // Editing (PATCH /pi/:id) is blocked server-side whenever this is true.
+  editLocked       Boolean       @default(false)
+
+  lineItems        PiLineItem[]
+  salesOrders      SalesOrder[]
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([sellerId, status])
+  @@index([clientId])
+}
+
+model PiLineItem {
+  id                  String          @id @default(uuid())
+  proformaInvoice     ProformaInvoice @relation(fields: [proformaInvoiceId], references: [id], onDelete: Cascade)
+  proformaInvoiceId   String
+
+  product             Product         @relation(fields: [productId], references: [id])
+  productId           String
+
+  brand               String
+  qty                 Decimal         @db.Decimal(12, 2)
+  price                Decimal        @db.Decimal(12, 2)
+  // v1.1: per-line discount, applied before tax at Bill/Invoice generation time
+  discountPercent      Decimal        @db.Decimal(5, 2) @default(0)
+
+  @@index([proformaInvoiceId])
+}
+
+model SalesOrder {
+  id               String            @id @default(uuid())
+  orderNumber      String            @unique // e.g. ORD-0514
+
+  // FK to the PI this order was generated from. Line items are NOT duplicated
+  // here in relational form — at creation time we snapshot the PI's line items
+  // into `lineItemsSnapshot` (JSON) so the order is immutable even if, after a
+  // later cancel + PI edit, the PI's live lineItems change.
+  proformaInvoice     ProformaInvoice @relation(fields: [piId], references: [id])
+  piId                String
+  lineItemsSnapshot   Json // [{ productId, productName, hsnCode, brand, qty, price, taxPercent }]
+
+  factoryUnit         FactoryUnit     @relation(fields: [factoryUnitId], references: [id])
+  factoryUnitId       String
+
+  seller              User            @relation("SellerOrders", fields: [sellerId], references: [id])
+  sellerId            String
+
+  status              SalesOrderStatus @default(PENDING)
+
+  // Always == sellerId when status = CANCELLED, enforced in service layer
+  cancelledBy         String?
+
+  acceptedAt          DateTime?
+  completedAt         DateTime?
+  rejectedAt          DateTime?
+  cancelledAt         DateTime?
+
+  bill                Bill?
+
+  createdAt           DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([factoryUnitId, status])
+  @@index([sellerId, status])
+  @@index([piId])
+}
+
+model Bill {
+  id               String     @id @default(uuid())
+
+  order            SalesOrder @relation(fields: [orderId], references: [id])
+  orderId          String     @unique
+
+  client           Client     @relation(fields: [clientId], references: [id])
+  clientId         String
+
+  lineItems        BillLineItem[]
+  amount           Decimal    @db.Decimal(14, 2)
+
+  status           BillStatus @default(PENDING)
+
+  createdBySeller  User       @relation("SellerBills", fields: [createdBySellerId], references: [id])
+  createdBySellerId String
+
+  invoice          Invoice?
+
+  createdAt        DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([status])
+}
+
+model BillLineItem {
+  id           String  @id @default(uuid())
+  bill         Bill    @relation(fields: [billId], references: [id], onDelete: Cascade)
+  billId       String
+
+  product      Product @relation(fields: [productId], references: [id])
+  productId    String
+
+  brand        String
+  qty          Decimal @db.Decimal(12, 2)
+  price        Decimal @db.Decimal(12, 2)
+  hsnCode      String
+  taxPercent   Decimal @db.Decimal(5, 2)
+  // v1.1: carried through from the PI line item so it reaches Invoice generation
+  discountPercent Decimal @db.Decimal(5, 2) @default(0)
+
+  @@index([billId])
+}
+
+model Invoice {
+  id                  String   @id @default(uuid())
+
+  bill                Bill     @relation(fields: [billId], references: [id])
+  billId              String   @unique
+
+  // v1.1: full tax-invoice numbering, separate from the internal Bill.
+  invoiceNumber       String   @unique // RSPL/<FY>/<series>, e.g. RSPL/26-27/799
+
+  gstType             GstType // manually chosen by Accounts — never auto-computed
+  taxableValue        Decimal  @db.Decimal(14, 2)
+  taxRate             Decimal  @db.Decimal(5, 2) @default(0) // overall summary rate shown in the header
+  cgst                Decimal  @db.Decimal(14, 2) @default(0)
+  sgst                Decimal  @db.Decimal(14, 2) @default(0)
+  igst                Decimal  @db.Decimal(14, 2) @default(0)
+  roundOff            Decimal  @db.Decimal(6, 2)  @default(0)
+  grandTotal          Decimal  @db.Decimal(14, 2)
+  amountInWords       String  // server-computed from grandTotal, never client-submitted
+
+  // v1.1: e-Way Bill / dispatch reference fields. Generating the e-Way Bill
+  // itself is out of scope — this just records the number for reference.
+  eWayBillNo          String?
+  dispatchDocNo       String?
+  termsOfDelivery     String? // free text, e.g. "Door Delivery" — defaults from PI.transportType
+
+  // v1.1: transporter snapshot, pulled from the Transport master at
+  // generation time (so a later edit to Transport doesn't retroactively
+  // change an already-issued invoice).
+  transport           Transport? @relation(fields: [transportId], references: [id])
+  transportId         String?
+  transporterName     String?
+  transporterGstin    String?
+
+  // v1.1: Consignee (Ship To) — snapshot from the Order/PI at generation time.
+  consigneeName       String
+  consigneeAddress    String
+  consigneeState      String?
+  consigneeGstin      String?
+  consigneeContact    String?
+
+  // v1.1: Buyer (Bill To) — usually same as consignee, editable by Accounts
+  // at generation time.
+  buyerName           String
+  buyerAddress        String
+  buyerState          String?
+  buyerGstin          String?
+  buyerContact        String?
+
+  // v1.1: snapshot of CompanySettings (name/GSTIN/address/UDYAM/PAN/bank
+  // details/signatory) as they were AT GENERATION TIME — a legal document
+  // must not silently change if company details are edited later. Mirrors
+  // the same freeze pattern used for SalesOrder.lineItemsSnapshot.
+  companySettingsSnapshot Json
+
+  remarks             String? // free text, e.g. signatory name
+
+  lineItems           InvoiceLineItem[]
+
+  pdfUrl              String? // generated invoice PDF, object storage
+  externalFileUrl     String? // optional attached external PDF, object storage
+
+  createdByAccounts   User     @relation("AccountsInvoices", fields: [createdByAccountsId], references: [id])
+  createdByAccountsId String
+
+  createdAt           DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// v1.1: invoice-level line items, generated from the Bill's line items at
+// Invoice-creation time (frozen snapshot, same pattern as PI -> SalesOrder).
+model InvoiceLineItem {
+  id              String   @id @default(uuid())
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId       String
+
+  description     String // product name at generation time
+  hsnCode         String
+  qty             Decimal  @db.Decimal(12, 2)
+  unit            String
+  rate            Decimal  @db.Decimal(12, 2)
+  discountPercent Decimal  @db.Decimal(5, 2) @default(0)
+  amount          Decimal  @db.Decimal(14, 2) // (qty * rate) after discount, before tax
+
+  @@index([invoiceId])
+}
+
+// ────────────────────────────────────────────────────────────────────
+// AUDIT LOG
+// ────────────────────────────────────────────────────────────────────
+
+model OrderEvent {
+  id          String   @id @default(uuid())
+  entityType  String // "SalesOrder" | "ProformaInvoice" | "Bill" | "Invoice" | "User" | "Client" | "Product" | "Transport" | "FactoryUnit"
+  entityId    String
+  action      String // "created" | "accepted" | "completed" | "rejected" | "cancelled" | "edited" | "deleted" | ...
+  actor       User     @relation("ActorEvents", fields: [actorId], references: [id])
+  actorId     String
+  metadata    Json?
+  timestamp   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+}
