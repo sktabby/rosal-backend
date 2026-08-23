@@ -23,6 +23,8 @@ export class SalesOrdersController {
   // Seller sees own orders; Dispatcher sees their factory unit's queue — service scopes both.
   // `history=true` bypasses the 48h Dispatched visibility window (v1.1) —
   // pass it from History-style screens; omit/false for active queue/list views.
+  // `archived` accepted as an alias for `history` (frontend teams may use
+  // either name — both map to the same behavior server-side).
   @Roles(UserRole.SELLER, UserRole.DISPATCHER)
   @Get()
   findMany(
@@ -31,6 +33,7 @@ export class SalesOrdersController {
     @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('history') history?: string,
+    @Query('archived') archived?: string,
   ) {
     const statusFilter = status
       ? (status.split(',') as SalesOrderStatus[]).length === 1
@@ -41,7 +44,7 @@ export class SalesOrdersController {
       search,
       status: statusFilter,
       page: page ? Number(page) : 1,
-      history: history === 'true',
+      history: history === 'true' || archived === 'true',
     });
   }
 
