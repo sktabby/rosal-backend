@@ -14,9 +14,11 @@ export class OtpDeliveryService {
   private transporter: nodemailer.Transporter;
 
   constructor(private config: ConfigService) {
+    const port = Number(this.config.get<string>('SMTP_PORT'));
     this.transporter = nodemailer.createTransport({
       host: this.config.get<string>('SMTP_HOST'),
-      port: Number(this.config.get<string>('SMTP_PORT')),
+      port,
+      secure: port === 465, // implicit TLS; port 587/25 use STARTTLS instead
       auth: {
         user: this.config.get<string>('SMTP_USER'),
         pass: this.config.get<string>('SMTP_PASS'),
@@ -41,8 +43,10 @@ export class OtpDeliveryService {
         )} minutes. If you did not request this, please contact your Admin.\n\n— Rosal Safety OMS`,
       });
     } catch (err) {
+      // Don't fail login over a broken/unconfigured SMTP relay — the OTP is
+      // still generated and checked server-side (see README §2), so an
+      // undelivered email shouldn't 500 the whole auth flow.
       this.logger.error(`Failed to send OTP email to ${email}`, err as Error);
-      throw err;
     }
   }
 
