@@ -1,19 +1,40 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 /**
  * Sends the SAME otp code to both the user's registered email and phone.
  * Swap the SMS provider block for whichever you actually use — Twilio shown
  * as the default since it's the most common for Indian SMS + is straightforward
  * to wire up; MSG91/Textlocal are common India-specific alternatives.
+ *
+ * EMAIL TRANSPORT: Resend (HTTPS API) is used when RESEND_API_KEY is set,
+ * otherwise this falls back to plain SMTP. Render's free instances block
+ * outbound traffic to SMTP ports (25/465/587), so SMTP silently times out
+ * there — Resend goes over 443 and is unaffected. Keeping the SMTP path means
+ * local dev (and `npm run verify:smtp`) still works unchanged.
  */
 @Injectable()
 export class OtpDeliveryService {
   private readonly logger = new Logger(OtpDeliveryService.name);
-  private transporter: nodemailer.Transporter;
+  private readonly resend?: Resend;
+  private readonly transporter?: nodemailer.Transporter;
+  private readonly mailFrom?: string;
 
   constructor(private config: ConfigService) {
+    const resendApiKey = this.config.get<string>('RESEND_API_KEY');
+    // MAIL_FROM is the provider-neutral name; SMTP_FROM is honoured as a
+    // fallback so existing .env files keep working.
+    this.mailFrom =
+      this.config.get<string>('MAIL_FROM') ?? this.config.get<string>('SMTP_FROM');
+
+    if (resendApiKey) {
+      this.resend = new Resend(resendApiKey);
+      this.logger.log('Email transport: Resend (HTTPS API)');
+      return;
+    }
+
     const port = Number(this.config.get<string>('SMTP_PORT'));
     this.transporter = nodemailer.createTransport({
       host: this.config.get<string>('SMTP_HOST'),
@@ -24,6 +45,37 @@ export class OtpDeliveryService {
         pass: this.config.get<string>('SMTP_PASS'),
       },
     });
+    this.logger.log('Email transport: SMTP');
+  }
+
+  /**
+   * Single send path for both transports. Throws on failure — callers decide
+   * whether that should be fatal (it never is for OTP/credential mail).
+   */
+  private async sendEmail(to: string, subject: string, text: string) {
+    if (!this.mailFrom) {
+      throw new Error('No sender configured — set MAIL_FROM (or SMTP_FROM)');
+    }
+
+    if (this.resend) {
+      // The Resend SDK resolves with { data, error } instead of rejecting,
+      // so a failed send looks like success unless error is checked.
+      const { error } = await this.resend.emails.send({
+        from: this.mailFrom,
+        to,
+        subject,
+        text,
+      });
+      if (error) {
+        throw new Error(`Resend rejected the message: ${error.name} — ${error.message}`);
+      }
+      return;
+    }
+
+    if (!this.transporter) {
+      throw new Error('No email transport configured — set RESEND_API_KEY or SMTP_*');
+    }
+    await this.transporter.sendMail({ from: this.mailFrom, to, subject, text });
   }
 
   async sendOtp(params: { email: string; phone: string; otp: string; firstName: string }) {
@@ -34,16 +86,15 @@ export class OtpDeliveryService {
 
   private async sendOtpEmail(email: string, firstName: string, otp: string) {
     try {
-      await this.transporter.sendMail({
-        from: this.config.get<string>('SMTP_FROM'),
-        to: email,
-        subject: 'Your Rosal Safety OMS login code',
-        text: `Hi ${firstName},\n\nYour one-time login code is: ${otp}\n\nThis code expires in ${this.config.get(
+      await this.sendEmail(
+        email,
+        'Your Rosal Safety OMS login code',
+        `Hi ${firstName},\n\nYour one-time login code is: ${otp}\n\nThis code expires in ${this.config.get(
           'OTP_EXPIRES_IN_MINUTES',
         )} minutes. If you did not request this, please contact your Admin.\n\n— Rosal Safety OMS`,
-      });
+      );
     } catch (err) {
-      // Don't fail login over a broken/unconfigured SMTP relay — the OTP is
+      // Don't fail login over a broken/unconfigured mail provider — the OTP is
       // still generated and checked server-side (see README §2), so an
       // undelivered email shouldn't 500 the whole auth flow.
       this.logger.error(`Failed to send OTP email to ${email}`, err as Error);
@@ -83,12 +134,11 @@ export class OtpDeliveryService {
   }) {
     const { email, firstName, employeeCode, generatedId, temporaryPassword } = params;
     try {
-      await this.transporter.sendMail({
-        from: this.config.get<string>('SMTP_FROM'),
-        to: email,
-        subject: 'Your Rosal Safety OMS account has been created',
-        text: `Hi ${firstName},\n\nAn account has been created for you on the Rosal Safety Order Management System.\n\nEmployee ID (use this to log in): ${employeeCode}\nDisplay ID: ${generatedId}\nTemporary Password: ${temporaryPassword}\n\nPlease log in and change your password from the Account screen.\n\n— Rosal Safety OMS`,
-      });
+      await this.sendEmail(
+        email,
+        'Your Rosal Safety OMS account has been created',
+        `Hi ${firstName},\n\nAn account has been created for you on the Rosal Safety Order Management System.\n\nEmployee ID (use this to log in): ${employeeCode}\nDisplay ID: ${generatedId}\nTemporary Password: ${temporaryPassword}\n\nPlease log in and change your password from the Account screen.\n\n— Rosal Safety OMS`,
+      );
     } catch (err) {
       this.logger.error(`Failed to send new-user email to ${email}`, err as Error);
       // Do not throw — user creation should still succeed even if email delivery fails;
