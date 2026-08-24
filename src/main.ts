@@ -19,13 +19,25 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
  * than blocking the whole app from booting in local dev.)
  */
 function assertRequiredEnvVars() {
-  const required = ['DATABASE_URL', 'JWT_SECRET'];
+  const required = ['DATABASE_URL', 'JWT_SECRET', 'RECAPTCHA_SECRET_KEY'];
   const missing = required.filter((key) => !process.env[key] || process.env[key]!.includes('REPLACE_ME'));
   if (missing.length > 0) {
     // eslint-disable-next-line no-console
     console.error(
       `❌ Refusing to start — missing/placeholder required env var(s): ${missing.join(', ')}. Check your .env file.`,
     );
+    process.exit(1);
+  }
+
+  // Google's public test secret accepts ANY token, which would silently
+  // disable captcha entirely. Fine for local dev, never in production.
+  const RECAPTCHA_TEST_SECRET = '6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe';
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.RECAPTCHA_SECRET_KEY === RECAPTCHA_TEST_SECRET
+  ) {
+    // eslint-disable-next-line no-console
+    console.error('❌ Refusing to start — the reCAPTCHA test key must not be used in production.');
     process.exit(1);
   }
 }

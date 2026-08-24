@@ -21,7 +21,37 @@ export class UsersService {
     return { available: !existing };
   }
 
+  /**
+   * Google's siteverify answers 200 with { success: false, 'error-codes': [...] }
+   * for a bad or already-used token, so the JSON body — not the HTTP status —
+   * is what decides. A network or parse failure is treated as a failed check
+   * rather than a pass, so an outage can't wave user creation through.
+   */
+  private async verifyCaptcha(captchaToken: string) {
+    let result: { success?: boolean };
+    try {
+      const res = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          // Presence is guaranteed by assertRequiredEnvVars() in main.ts.
+          secret: process.env.RECAPTCHA_SECRET_KEY as string,
+          response: captchaToken,
+        }),
+      });
+      result = await res.json();
+    } catch {
+      throw new BadRequestException('Captcha verification failed');
+    }
+
+    if (result?.success !== true) {
+      throw new BadRequestException('Captcha verification failed');
+    }
+  }
+
   async create(dto: CreateUserDto, actorId: string) {
+    await this.verifyCaptcha(dto.captchaToken);
+
     const existing = await this.prisma.user.findUnique({
       where: { employeeCode: dto.employeeCode },
     });
@@ -109,6 +139,7 @@ export class UsersService {
     const data: any = { ...dto };
     delete data.password;
     delete data.employeeCode; // employeeCode is permanent, never editable
+    delete data.captchaToken; // not a column; only meaningful on create
 
     if (dto.password) {
       data.passwordHash = await bcrypt.hash(dto.password, 10);

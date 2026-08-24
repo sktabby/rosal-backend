@@ -1,4 +1,4 @@
-import { IsEmail, IsEnum, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsString, MinLength } from 'class-validator';
 import { UserRole } from '@prisma/client';
 
 export class CreateUserDto {
@@ -23,4 +23,13 @@ export class CreateUserDto {
   @IsString()
   @MinLength(8)
   password: string;
+
+  /**
+   * Single-use reCAPTCHA token from the admin UI widget. Checked against
+   * Google's siteverify before the user is created, then discarded — it is
+   * never persisted.
+   */
+  @IsString()
+  @IsNotEmpty()
+  captchaToken: string;
 }
