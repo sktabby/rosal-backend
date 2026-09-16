@@ -49,9 +49,19 @@ async function bootstrap() {
 
   app.use(helmet());
 
-  const corsOrigins = (process.env.CORS_ORIGINS ?? '*')
-    .split(',')
-    .map((o) => o.trim());
+  // No wildcard default: '*' combined with credentials: true is an invalid
+  // combination browsers reject anyway, but relying on that is fragile — fail
+  // closed (deny all cross-origin) instead if CORS_ORIGINS isn't set, rather
+  // than silently opening up to every origin on a misconfigured deployment.
+  const corsOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())
+    : [];
+  if (corsOrigins.length === 0) {
+    Logger.warn(
+      'CORS_ORIGINS is not set — cross-origin requests (e.g. from the web portal) will be rejected. The Android app is unaffected.',
+      'Bootstrap',
+    );
+  }
   app.enableCors({
     origin: corsOrigins,
     credentials: true,

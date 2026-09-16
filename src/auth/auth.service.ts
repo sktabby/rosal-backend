@@ -100,10 +100,17 @@ export class AuthService {
    * attempt ceiling here so a stuck OTP flow can't be resent indefinitely.
    */
   async resendOtp(employeeCode: string) {
+    // Same generic message on every path below (missing account, inactive account,
+    // AND rate-limited account) — a distinct message/status on any one of them would
+    // let a caller distinguish "this employee code exists" from "it doesn't" by
+    // spamming resend until they get the rate-limit response instead of the
+    // not-found one. The client doesn't need to tell these apart: a rate-limited
+    // user still has a valid unexpired OTP from their last real send.
+    const genericResponse = { message: 'If this account exists, a new OTP has been sent.' };
+
     const user = await this.prisma.user.findUnique({ where: { employeeCode } });
     if (!user || user.deletedAt || user.status !== 'ACTIVE') {
-      // Same generic response either way — don't leak whether the code exists.
-      return { message: 'If this account exists, a new OTP has been sent.' };
+      return genericResponse;
     }
 
     const resendWindowStart = new Date(Date.now() - 15 * 60_000); // last 15 min
@@ -111,11 +118,11 @@ export class AuthService {
       where: { userId: user.id, createdAt: { gte: resendWindowStart } },
     });
     if (recentCount >= 5) {
-      throw new BadRequestException('Too many OTP requests — please log in again shortly');
+      return genericResponse;
     }
 
     await this.issueOtp(user);
-    return { message: 'A new OTP has been sent to your registered email and phone.' };
+    return genericResponse;
   }
 
   private async issueOtp(user: {
