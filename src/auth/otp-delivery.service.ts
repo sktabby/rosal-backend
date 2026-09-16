@@ -21,18 +21,69 @@ export class OtpDeliveryService {
   private readonly resend?: Resend;
   private readonly transporter?: nodemailer.Transporter;
   private readonly mailFrom?: string;
+  /**
+   * LOCAL DEV ONLY. When true, sendOtp() prints the code to the server console
+   * instead of emailing/SMSing it, so the login flow is testable without a
+   * working mail provider (e.g. while Resend is still in sandbox mode).
+   *
+   * Deliberately double-gated: the explicit OTP_DEV_MODE=true flag AND
+   * NODE_ENV !== 'production'. Setting the flag on a production deployment
+   * does nothing, so this cannot leak real OTPs into production logs.
+   */
+  private readonly otpDevMode: boolean;
 
   constructor(private config: ConfigService) {
-    const resendApiKey = this.config.get<string>('RESEND_API_KEY');
-    // MAIL_FROM is the provider-neutral name; SMTP_FROM is honoured as a
-    // fallback so existing .env files keep working.
-    this.mailFrom =
-      this.config.get<string>('MAIL_FROM') ?? this.config.get<string>('SMTP_FROM');
+    const devModeRequested = this.config.get<string>('OTP_DEV_MODE') === 'true';
+    const isProduction = this.config.get<string>('NODE_ENV') === 'production';
+    this.otpDevMode = devModeRequested && !isProduction;
 
-    if (resendApiKey) {
-      this.resend = new Resend(resendApiKey);
-      this.logger.log('Email transport: Resend (HTTPS API)');
-      return;
+    if (devModeRequested && isProduction) {
+      this.logger.warn(
+        'OTP_DEV_MODE=true was IGNORED because NODE_ENV=production. Real OTP delivery is active.',
+      );
+    }
+    if (this.otpDevMode) {
+      this.logger.warn(
+        'OTP_DEV_MODE is ON — OTP codes will be printed to this console and NOT emailed/texted. Never enable this in production.',
+      );
+    }
+
+    const resendApiKey = this.config.get<string>('RESEND_API_KEY');
+
+    /**
+     * MAIL_TRANSPORT explicitly picks the email provider:
+     *   'smtp'   -> always use SMTP, even if a Resend key is present
+     *   'resend' -> always use Resend
+     *   'auto'   -> (default) Resend when RESEND_API_KEY is set, else SMTP
+     *
+     * This exists so local dev can use SMTP without having to delete the
+     * Resend key from .env. Resend's sandbox only delivers to the account
+     * owner's address until a domain is verified, whereas SMTP can send
+     * anywhere — but SMTP ports are blocked on Render, which is why the
+     * deployed environment still wants Resend.
+     */
+    const transport = (this.config.get<string>('MAIL_TRANSPORT') ?? 'auto').toLowerCase();
+    const useResend =
+      transport === 'resend' || (transport === 'auto' && !!resendApiKey);
+
+    // MAIL_FROM is the provider-neutral name; SMTP_FROM is honoured as a
+    // fallback so existing .env files keep working. When sending over SMTP the
+    // envelope sender must match the authenticated SMTP account, so prefer
+    // SMTP_FROM in that case.
+    this.mailFrom = useResend
+      ? this.config.get<string>('MAIL_FROM') ?? this.config.get<string>('SMTP_FROM')
+      : this.config.get<string>('SMTP_FROM') ?? this.config.get<string>('MAIL_FROM');
+
+    if (useResend) {
+      if (!resendApiKey) {
+        this.logger.warn(
+          'MAIL_TRANSPORT=resend but RESEND_API_KEY is not set — falling back to SMTP.',
+        );
+      } else {
+        this.resend = new Resend(resendApiKey);
+        this.logger.log('Email transport: Resend (HTTPS API)');
+        return;
+      }
     }
 
     const port = Number(this.config.get<string>('SMTP_PORT'));
@@ -45,7 +96,9 @@ export class OtpDeliveryService {
         pass: this.config.get<string>('SMTP_PASS'),
       },
     });
-    this.logger.log('Email transport: SMTP');
+    this.logger.log(
+      `Email transport: SMTP (${this.config.get<string>('SMTP_HOST')}:${port}) as ${this.mailFrom}`,
+    );
   }
 
   /**
@@ -78,8 +131,26 @@ export class OtpDeliveryService {
     await this.transporter.sendMail({ from: this.mailFrom, to, subject, text });
   }
 
-  async sendOtp(params: { email: string; phone: string; otp: string; firstName: string }) {
-    const { email, phone, otp, firstName } = params;
+  async sendOtp(params: {
+    email: string;
+    phone: string;
+    otp: string;
+    firstName: string;
+    employeeCode?: string;
+  }) {
+    const { email, phone, otp, firstName, employeeCode } = params;
+
+    if (this.otpDevMode) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `
+[DEV MODE] OTP for ${employeeCode ?? email}: ${otp}
+` +
+          `[DEV MODE] (email/SMS skipped — set OTP_DEV_MODE=false in .env to send for real)
+`,
+      );
+      return;
+    }
 
     await Promise.all([this.sendOtpEmail(email, firstName, otp), this.sendOtpSms(phone, otp)]);
   }

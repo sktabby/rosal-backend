@@ -13,6 +13,54 @@ import { LoginDto } from './dto/login.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
+/**
+ * The single canonical shape of a "user account" returned to clients.
+ *
+ * Both GET /account/me and POST /auth/verify-otp return this exact shape.
+ * They used to build it independently, which let them drift: verify-otp was
+ * missing `role` (breaking the Android client, whose user model requires it)
+ * and /account/me returned only a nested `assignedFactoryUnit` object while
+ * both clients actually read the flat `assignedFactoryUnitId`.
+ *
+ * Anything user-account-shaped should reuse USER_ACCOUNT_SELECT + toUserAccount
+ * rather than hand-rolling another select/object literal.
+ */
+export const USER_ACCOUNT_SELECT = {
+  id: true,
+  role: true,
+  employeeCode: true,
+  generatedId: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  phone: true,
+  lastLoginAt: true,
+  lastLoginDevice: true,
+  pushNotificationsEnabled: true,
+  emailNotificationsEnabled: true,
+  assignedFactoryUnit: { select: { id: true, name: true } },
+} as const;
+
+type UserAccountRow = {
+  assignedFactoryUnit?: { id: string; name: string } | null;
+  [key: string]: unknown;
+};
+
+/**
+ * Flattens the Prisma row into the wire shape. `assignedFactoryUnitId` is what
+ * both the Android app and the web portal actually read; the nested
+ * `assignedFactoryUnit` is kept alongside it so the unit's name stays
+ * available without a second request.
+ */
+export function toUserAccount<T extends UserAccountRow>(user: T) {
+  const { assignedFactoryUnit, ...rest } = user;
+  return {
+    ...rest,
+    assignedFactoryUnitId: assignedFactoryUnit?.id ?? null,
+    assignedFactoryUnit: assignedFactoryUnit ?? null,
+  };
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -70,7 +118,13 @@ export class AuthService {
     return { message: 'A new OTP has been sent to your registered email and phone.' };
   }
 
-  private async issueOtp(user: { id: string; email: string; phone: string; firstName: string }) {
+  private async issueOtp(user: {
+    id: string;
+    email: string;
+    phone: string;
+    firstName: string;
+    employeeCode: string;
+  }) {
     const otp = this.generateOtp();
     const otpHash = await bcrypt.hash(otp, 10);
     const expiresInMinutes = Number(this.config.get('OTP_EXPIRES_IN_MINUTES') ?? 5);
@@ -94,6 +148,7 @@ export class AuthService {
       phone: user.phone,
       otp,
       firstName: user.firstName,
+      employeeCode: user.employeeCode,
     });
   }
 
@@ -152,14 +207,12 @@ export class AuthService {
     return {
       accessToken: token,
       role: user.role,
-      user: {
-        id: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        generatedId: user.generatedId,
-        employeeCode: user.employeeCode,
-        assignedFactoryUnitId: user.assignedFactoryUnit?.id ?? null,
-      },
+      user: toUserAccount(
+        await this.prisma.user.findUniqueOrThrow({
+          where: { id: user.id },
+          select: USER_ACCOUNT_SELECT,
+        }),
+      ),
     };
   }
 
@@ -181,24 +234,12 @@ export class AuthService {
   }
 
   async me(userId: string) {
-    return this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: {
-        id: true,
-        role: true,
-        employeeCode: true,
-        generatedId: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        lastLoginAt: true,
-        lastLoginDevice: true,
-        pushNotificationsEnabled: true,
-        emailNotificationsEnabled: true,
-        assignedFactoryUnit: { select: { id: true, name: true } },
-      },
-    });
+    return toUserAccount(
+      await this.prisma.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: USER_ACCOUNT_SELECT,
+      }),
+    );
   }
 
   async updateNotificationPrefs(
