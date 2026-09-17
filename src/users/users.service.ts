@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { generateDisplayId } from '../common/utils/id-generator.util';
+import { generateTemporaryPassword } from '../common/utils/password-generator.util';
 import { OtpDeliveryService } from '../auth/otp-delivery.service';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { UserRole } from '@prisma/client';
@@ -155,6 +156,39 @@ export class UsersService {
     });
 
     return this.toSafeUser(user);
+  }
+
+  /**
+   * Admin-triggered reset: generates a new temporary password, emails it to
+   * the user, and returns it once so the admin can relay it if delivery
+   * fails. Nothing is ever stored except the bcrypt hash — same as create.
+   */
+  async resetPassword(id: string, actorId: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id } });
+    if (user.deletedAt) {
+      throw new BadRequestException('Cannot reset the password of a deleted user');
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    await this.prisma.user.update({ where: { id }, data: { passwordHash } });
+
+    await this.orderEvents.log({
+      entityType: 'User',
+      entityId: id,
+      action: 'password_reset',
+      actorId,
+    });
+
+    await this.otpDelivery.sendPasswordResetEmail({
+      email: user.email,
+      firstName: user.firstName,
+      employeeCode: user.employeeCode,
+      temporaryPassword,
+    });
+
+    return { temporaryPassword };
   }
 
   async softDelete(id: string, actorId: string) {

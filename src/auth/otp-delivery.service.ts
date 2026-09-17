@@ -216,4 +216,19 @@ export class OtpDeliveryService {
       // Admin can be shown a "resend credentials" affordance separately.
     }
   }
+
+  async sendPasswordResetEmail(params: { email: string; firstName: string; employeeCode: string; temporaryPassword: string }) {
+    const { email, firstName, employeeCode, temporaryPassword } = params;
+    try {
+      await this.sendEmail(
+        email,
+        'Your Rosal Safety OMS password has been reset',
+        `Hi ${firstName},\n\nAn administrator has reset your password on the Rosal Safety Order Management System.\n\nEmployee ID (use this to log in): ${employeeCode}\nTemporary Password: ${temporaryPassword}\n\nPlease log in and change your password from the Account screen. If you did not expect this, contact your administrator.\n\n— Rosal Safety OMS`,
+      );
+    } catch (err) {
+      this.logger.error(`Failed to send password-reset email to ${email}`, err as Error);
+      // Do not throw — the reset already succeeded and the admin sees the
+      // temporary password on screen as a fallback if delivery fails.
+    }
+  }
 }

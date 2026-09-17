@@ -53,4 +53,9 @@ export class UsersController {
   remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.usersService.softDelete(id, user.id);
   }
+
+  @Post('users/:id/reset-password')
+  resetPassword(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.resetPassword(id, user.id);
+  }
 }
