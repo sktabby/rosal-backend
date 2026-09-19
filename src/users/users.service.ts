@@ -7,6 +7,7 @@ import { generateTemporaryPassword } from '../common/utils/password-generator.ut
 import { OtpDeliveryService } from '../auth/otp-delivery.service';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { UserRole } from '@prisma/client';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 @Injectable()
 export class UsersService {
@@ -14,6 +15,7 @@ export class UsersService {
     private prisma: PrismaService,
     private otpDelivery: OtpDeliveryService,
     private orderEvents: OrderEventsService,
+    private realtime: RealtimeGateway,
   ) {}
 
   /** Uniqueness must be checked against FULL history, incl. soft-deleted users — codes are never reused. */
@@ -148,6 +150,10 @@ export class UsersService {
 
     const user = await this.prisma.user.update({ where: { id }, data });
 
+    // A new password or role ends the user's live connection; the app reconnects (or is
+    // signed out, for a password change) with a session that reflects the change.
+    if (dto.password || dto.role) this.realtime.disconnectUsers(id);
+
     await this.orderEvents.log({
       entityType: 'User',
       entityId: id,
@@ -173,6 +179,7 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
 
     await this.prisma.user.update({ where: { id }, data: { passwordHash } });
+    this.realtime.disconnectUsers(id);
 
     await this.orderEvents.log({
       entityType: 'User',
@@ -196,6 +203,7 @@ export class UsersService {
       where: { id },
       data: { deletedAt: new Date(), status: 'DEACTIVATED' },
     });
+    this.realtime.disconnectUsers(id);
 
     await this.orderEvents.log({
       entityType: 'User',

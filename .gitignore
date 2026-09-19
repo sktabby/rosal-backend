@@ -6,3 +6,4 @@ dist
 otp-dev.local.log
 .DS_Store
 coverage
+login.json

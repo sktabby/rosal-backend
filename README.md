@@ -55,15 +55,12 @@ npm run prisma:migrate      # creates tables in your Neon DB (prompts for a migr
 npm run prisma:seed         # creates the CompanySettings singleton + bootstrap Admin
 ```
 
-The seed script creates one Admin account so you have something to log in with:
+The seed script creates one demo account per role (`ADMIN-0001`, `SELLER-0001`,
+`DISPATCH-0001`, `ACCOUNTS-0001`). Their password is `SEED_PASSWORD` from the
+environment, or — if that isn't set — a random one printed once at the end of the run.
 
-```
-Employee Code: ADMIN-0001
-Password:      ChangeMe123!
-```
-
-⚠️ Change this password immediately after your first login (or delete/edit
-the seeded user directly via Prisma Studio) — it's a well-known default.
+⚠️ Never seed demo accounts into the production database. If they exist there,
+deactivate them from the admin website.
 
 You can inspect/edit data visually at any time with:
 
@@ -94,7 +91,7 @@ Socket.io is on the same server, namespace `/realtime` — e.g.
 # 1. Login (triggers OTP — check terminal/SMTP inbox)
 curl -X POST http://localhost:4000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"employeeCode":"ADMIN-0001","password":"ChangeMe123!"}'
+  -d '{"employeeCode":"ADMIN-0001","password":"<your password>"}'
 
 # 2. Verify OTP (use the code from your terminal/email)
 curl -X POST http://localhost:4000/api/auth/verify-otp \
@@ -160,6 +157,9 @@ A full pass against the project's security checklist turned up and fixed:
 - **Startup env validation** — the app now refuses to boot if `DATABASE_URL` or `JWT_SECRET` is missing or still a placeholder, instead of silently running broken.
 - **Prisma error mapping** — `P2025`/`P2002` now map to proper 404/409s instead of a blanket 500; all other unhandled errors get a correlation ID in the response and full detail only in the server log (never a stack trace to the client).
 - **Admin audit-trail endpoint** — `GET /order-events/:entityType/:entityId` was implemented in the service but never exposed via a controller; added.
+- **Realtime socket auth** — the `/realtime` handshake now runs the same session check as REST (`src/auth/session.ts`): deactivated/deleted users are refused, sockets close when their token expires, and deactivation, password change/reset, role change and factory-unit reassignment disconnect the affected sockets.
+- **Session invalidation on password change** — every token carries a stamp of the user's password hash, so changing or resetting a password ends all other sessions. `POST /account/change-password` returns a fresh `accessToken` for the calling device.
+- **No fixed demo password** — `prisma/seed.ts` uses `SEED_PASSWORD` or a random password; `login.json` is no longer tracked.
 
 ---
 
@@ -194,7 +194,6 @@ A full pass against the project's security checklist turned up and fixed:
 
 - `User.lastLoginDevice` is hardcoded to `"Unknown device"` — should parse the client's `User-Agent` header instead.
 - PI auto-archival (`archiveStaleDrafts()`) exists but isn't scheduled — wire up `@nestjs/schedule`'s `@Cron` or an external cron.
-- Session invalidation on password change (force logout elsewhere) — noted as an open item in the original spec, still undecided.
 - Invoice PDF template and FCM push wiring — see §8 above.
 
 ---

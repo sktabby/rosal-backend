@@ -276,46 +276,44 @@ export class SalesOrdersService {
   }
 
   /**
-   * Seller-only, at ANY status (Pending/Processing/Dispatched). Sets CANCELLED,
+   * Seller-only, while the order is still Pending or Processing. Sets CANCELLED and
    * unlocks the source PI so it becomes editable in place again (no versioning).
    *
-   * Blocks cancellation once a Bill already exists against this order — even
-   * though the order's own status might still show DISPATCHED (Bill creation
-   * doesn't change Order.status; only Invoice creation does, to BILLED).
-   * Without this check, an order could be cancelled while a Bill for it is
-   * still sitting in Accounts' inbox, leaving an orphaned Bill referencing a
-   * cancelled order — exactly what "prevent orphaned Invoice/Bill
-   * references" in the security checklist is about.
+   * Once the dispatcher marks it Dispatched the goods have left the factory, so the
+   * order can no longer be cancelled — it goes on to billing. (This also rules out
+   * cancelling an order that already has a Bill, which only exists after dispatch.)
    */
   async cancel(id: string, seller: AuthenticatedUser) {
-    const order = await this.prisma.salesOrder.findUniqueOrThrow({
-      where: { id },
-      include: { bill: { select: { id: true } } },
-    });
+    const order = await this.prisma.salesOrder.findUniqueOrThrow({ where: { id } });
     if (order.sellerId !== seller.id) throw new ForbiddenException();
-    if (order.status === SalesOrderStatus.CANCELLED || order.status === SalesOrderStatus.REJECTED || order.status === SalesOrderStatus.BILLED) {
-      throw new BadRequestException('This order can no longer be cancelled');
-    }
-    if (order.bill) {
+    const cancellable: SalesOrderStatus[] = [SalesOrderStatus.PENDING, SalesOrderStatus.PROCESSING];
+    if (!cancellable.includes(order.status)) {
       throw new BadRequestException(
-        'A bill has already been generated for this order and cannot be cancelled from here — contact Accounts.',
+        order.status === SalesOrderStatus.DISPATCHED || order.status === SalesOrderStatus.BILLED
+          ? 'This order has already been dispatched and can no longer be cancelled.'
+          : 'This order can no longer be cancelled.',
       );
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const cancelled = await tx.salesOrder.update({
-        where: { id },
+      // Conditional on the status still being cancellable: if the dispatcher marks it
+      // dispatched between the check above and this write, nothing changes.
+      const { count } = await tx.salesOrder.updateMany({
+        where: { id, status: { in: cancellable } },
         data: {
           status: SalesOrderStatus.CANCELLED,
           cancelledBy: seller.id,
           cancelledAt: new Date(),
         },
       });
+      if (count === 0) {
+        throw new BadRequestException('This order was just dispatched and can no longer be cancelled.');
+      }
       await tx.proformaInvoice.update({
         where: { id: order.piId },
         data: { editLocked: false },
       });
-      return cancelled;
+      return tx.salesOrder.findUniqueOrThrow({ where: { id } });
     });
 
     await this.orderEvents.log({

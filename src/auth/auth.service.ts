@@ -12,6 +12,8 @@ import { OtpDeliveryService } from './otp-delivery.service';
 import { LoginDto } from './dto/login.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { passwordStamp } from './session';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 /**
  * The single canonical shape of a "user account" returned to clients.
@@ -68,6 +70,7 @@ export class AuthService {
     private jwt: JwtService,
     private config: ConfigService,
     private otpDelivery: OtpDeliveryService,
+    private realtime: RealtimeGateway,
   ) {}
 
   /** Step 1: employeeCode + password -> triggers one shared OTP to email + phone. */
@@ -165,7 +168,8 @@ export class AuthService {
       where: { employeeCode: dto.employeeCode },
       include: { assignedFactoryUnit: true },
     });
-    if (!user) throw new UnauthorizedException('Invalid request');
+    // Re-checked here: the account may have been deactivated between the password step and the OTP.
+    if (!user || user.deletedAt || user.status !== 'ACTIVE') throw new UnauthorizedException('Invalid request');
 
     const latestOtp = await this.prisma.otpCode.findFirst({
       where: { userId: user.id, consumedAt: null },
@@ -205,11 +209,7 @@ export class AuthService {
       },
     });
 
-    const token = this.jwt.sign({
-      sub: user.id,
-      role: user.role,
-      employeeCode: user.employeeCode,
-    });
+    const token = this.signToken(user);
 
     return {
       accessToken: token,
@@ -231,13 +231,29 @@ export class AuthService {
       throw new BadRequestException('Current password is incorrect');
     }
 
+    if (dto.newPassword === dto.currentPassword) {
+      throw new BadRequestException('New password must be different from your current password');
+    }
+
     const newHash = await bcrypt.hash(dto.newPassword, 10);
-    await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
       data: { passwordHash: newHash },
     });
 
-    return { message: 'Password updated' };
+    // The new hash invalidates every earlier token, including the caller's — hand back a
+    // fresh one so this device stays signed in while every other session is ended.
+    this.realtime.disconnectUsers(userId);
+    return { message: 'Password updated', accessToken: this.signToken(updated) };
+  }
+
+  private signToken(user: { id: string; role: string; employeeCode: string; passwordHash: string }) {
+    return this.jwt.sign({
+      sub: user.id,
+      role: user.role,
+      employeeCode: user.employeeCode,
+      pv: passwordStamp(user.passwordHash),
+    });
   }
 
   async me(userId: string) {

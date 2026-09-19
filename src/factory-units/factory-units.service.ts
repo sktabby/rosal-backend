@@ -3,10 +3,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateFactoryUnitDto } from './dto/create-factory-unit.dto';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { UserRole } from '@prisma/client';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 @Injectable()
 export class FactoryUnitsService {
-  constructor(private prisma: PrismaService, private orderEvents: OrderEventsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private orderEvents: OrderEventsService,
+    private realtime: RealtimeGateway,
+  ) {}
 
   /** Dropdown source: only Dispatchers not already assigned to a Factory Unit. */
   async findUnassignedDispatchers() {
@@ -77,12 +82,19 @@ export class FactoryUnitsService {
       }
     }
     const unit = await this.prisma.factoryUnit.update({ where: { id }, data: dto });
+    // Reassigned: the previous dispatcher must stop receiving this unit's orders live,
+    // and the new one reconnects into the unit's room.
+    if (dto.assignedDispatcherId !== undefined) {
+      this.realtime.disconnectFactoryUnit(id);
+      this.realtime.disconnectUsers(dto.assignedDispatcherId);
+    }
     await this.orderEvents.log({ entityType: 'FactoryUnit', entityId: id, action: 'edited', actorId });
     return unit;
   }
 
   async softDelete(id: string, actorId: string) {
     await this.prisma.factoryUnit.update({ where: { id }, data: { deletedAt: new Date() } });
+    this.realtime.disconnectFactoryUnit(id);
     await this.orderEvents.log({ entityType: 'FactoryUnit', entityId: id, action: 'deleted', actorId });
     return { message: 'Factory unit deleted' };
   }

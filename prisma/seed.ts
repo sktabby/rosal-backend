@@ -1,10 +1,13 @@
 import { PrismaClient, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { generateDisplayId } from '../src/common/utils/id-generator.util';
+import { generateTemporaryPassword } from '../src/common/utils/password-generator.util';
 
 const prisma = new PrismaClient();
 
-const DEMO_PASSWORD = 'ChangeMe123!';
+// Never a fixed, published password: take SEED_PASSWORD from the environment, or generate a
+// random one that is printed once below. Demo accounts only get it when first created.
+const DEMO_PASSWORD = process.env.SEED_PASSWORD || generateTemporaryPassword(16);
 
 async function upsertUser(params: {
   role: UserRole;
@@ -30,7 +33,7 @@ async function upsertUser(params: {
       passwordHash,
     },
   });
-  console.log(`✔ ${params.role} created — employeeCode: ${params.employeeCode} / password: ${DEMO_PASSWORD}`);
+  console.log(`✔ ${params.role} created — employeeCode: ${params.employeeCode}`);
   return user;
 }
 
@@ -157,7 +160,8 @@ async function main() {
   }
 
   console.log('\n──────────────────────────────────────────────');
-  console.log('Demo credentials (all use password: ' + DEMO_PASSWORD + ')');
+  console.log('Demo accounts created in this run use password: ' + DEMO_PASSWORD);
+  console.log('(Accounts that already existed keep their current password.)');
   console.log('  Admin:      ADMIN-0001');
   console.log('  Seller:     SELLER-0001');
   console.log('  Dispatcher: DISPATCH-0001');

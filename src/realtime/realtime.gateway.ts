@@ -11,6 +11,7 @@ import { Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
+import { JwtPayload, loadActiveSessionUser } from '../auth/session';
 
 // process.env.CORS_ORIGINS is populated by the explicit `import 'dotenv/config'`
 // at the top of main.ts, which — because ES module imports execute top-to-
@@ -43,20 +44,20 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   async handleConnection(client: Socket) {
     try {
       const token = this.extractToken(client);
-      const payload = this.jwt.verify(token);
+      const payload = this.jwt.verify<JwtPayload & { exp?: number }>(token);
 
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-        include: { assignedFactoryUnit: true },
-      });
-      if (!user) throw new UnauthorizedException();
+      // Same check as every REST request: a deactivated/deleted user, or a token issued
+      // before a password change, never gets a live feed of order updates.
+      const user = await loadActiveSessionUser(this.prisma, payload);
 
       client.data.userId = user.id;
       client.data.role = user.role;
-      client.data.assignedFactoryUnitId = user.assignedFactoryUnit?.id ?? null;
+      client.data.assignedFactoryUnitId = user.assignedFactoryUnitId;
 
-      if (user.role === 'DISPATCHER' && user.assignedFactoryUnit) {
-        client.join(`factoryUnit:${user.assignedFactoryUnit.id}`);
+      // Lets the server end every live connection of one user (deactivation, password change).
+      client.join(`session:${user.id}`);
+      if (user.role === 'DISPATCHER' && user.assignedFactoryUnitId) {
+        client.join(`factoryUnit:${user.assignedFactoryUnitId}`);
       }
       if (user.role === 'SELLER') {
         client.join(`user:${user.id}`);
@@ -65,15 +66,35 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         client.join('accounts');
       }
 
+      // A socket outliving its token would keep receiving events after the REST session
+      // has expired — close it when the token does; the client reconnects with a new one.
+      if (payload.exp) {
+        const msLeft = payload.exp * 1000 - Date.now();
+        const timer = setTimeout(() => client.disconnect(true), Math.max(msLeft, 0));
+        client.once('disconnect', () => clearTimeout(timer));
+      }
+
       this.logger.log(`Socket connected: ${user.role} ${user.id}`);
     } catch (err) {
       this.logger.warn(`Socket auth failed: ${(err as Error).message}`);
-      client.disconnect();
+      client.disconnect(true);
     }
   }
 
   handleDisconnect(client: Socket) {
     this.logger.log(`Socket disconnected: ${client.data?.userId ?? 'unknown'}`);
+  }
+
+  /** Closes every live connection of these users; clients must re-authenticate to reconnect. */
+  disconnectUsers(...userIds: (string | null | undefined)[]) {
+    for (const id of userIds) {
+      if (id) this.server.in(`session:${id}`).disconnectSockets(true);
+    }
+  }
+
+  /** Drops the dispatcher socket(s) in a factory unit's room, e.g. after reassignment. */
+  disconnectFactoryUnit(factoryUnitId: string) {
+    this.server.in(`factoryUnit:${factoryUnitId}`).disconnectSockets(true);
   }
 
   @SubscribeMessage('order:subscribe')
