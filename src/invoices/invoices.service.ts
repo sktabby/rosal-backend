@@ -6,6 +6,7 @@ import { OrderEventsService } from '../order-events/order-events.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { buildInvoiceNumber, currentFinancialYearLabel } from '../common/utils/id-generator.util';
 import { amountToWords } from '../common/utils/number-to-words.util';
+import { InvoicePdfLine, renderInvoicePdf } from './invoice-pdf';
 
 @Injectable()
 export class InvoicesService {
@@ -114,6 +115,8 @@ export class InvoicesService {
       bankIFSC: companySettings.bankIFSC,
       bankBranch: companySettings.bankBranch,
       authorisedSignatory: companySettings.authorisedSignatory,
+      officeAddress: companySettings.officeAddress,
+      declaration: companySettings.declaration,
       // "Dispatch From" — factory unit address if present, else default company address
       dispatchFromAddress: bill.order.factoryUnit.address || companySettings.address,
     };
@@ -218,15 +221,105 @@ export class InvoicesService {
   }
 
   /**
-   * PDF generation is a stub here — wire in a headless render/template engine
-   * (e.g. Puppeteer + an HTML invoice template, or a PDF-generation library)
-   * once the final layout pass against the handwritten reference is done.
-   * All the fields needed for that template now exist on the Invoice record
-   * itself (see schema v1.1) — this just needs the actual rendering step.
+   * Renders the tax invoice PDF on demand from the frozen Invoice record (no
+   * stored file, so a re-download always matches what was issued).
    */
-  async getPdfUrl(id: string) {
-    const invoice = await this.findOne(id);
-    if (invoice.pdfUrl) return { pdfUrl: invoice.pdfUrl };
-    throw new BadRequestException('Invoice PDF generation not yet configured');
+  async renderPdf(id: string): Promise<{ fileName: string; pdf: Buffer }> {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        lineItems: true,
+        bill: {
+          include: {
+            lineItems: { include: { product: true } },
+            createdBySeller: { select: { firstName: true, lastName: true, phone: true, email: true } },
+            order: { include: { proformaInvoice: true } },
+          },
+        },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+
+    const snapshot = (invoice.companySettingsSnapshot ?? {}) as Record<string, string | null | undefined>;
+    // Invoices issued before office address / declaration were snapshotted fall
+    // back to the current settings for just those two letterhead fields.
+    const needsCurrent = !('officeAddress' in snapshot) || !('declaration' in snapshot);
+    const current = needsCurrent ? await this.prisma.companySettings.findFirst() : null;
+
+    // Invoice lines don't store brand or tax rate; take them from the matching bill line.
+    const billLines = [...invoice.bill.lineItems];
+    const summaryRate = Number(invoice.taxRate);
+    const lines: InvoicePdfLine[] = invoice.lineItems.map((li) => {
+      const matchIdx = billLines.findIndex(
+        (b) =>
+          b.product.name === li.description &&
+          b.hsnCode === li.hsnCode &&
+          Number(b.qty) === Number(li.qty) &&
+          Number(b.price) === Number(li.rate),
+      );
+      const match = matchIdx >= 0 ? billLines.splice(matchIdx, 1)[0] : undefined;
+      return {
+        description: li.description,
+        hsnCode: li.hsnCode,
+        brand: match?.brand,
+        qty: Number(li.qty),
+        unit: li.unit,
+        rate: Number(li.rate),
+        discountPercent: Number(li.discountPercent),
+        taxPercent: match ? Number(match.taxPercent) : summaryRate,
+        amount: Number(li.amount),
+      };
+    });
+
+    const seller = invoice.bill.createdBySeller;
+    const pi = invoice.bill.order.proformaInvoice;
+    const pdf = await renderInvoicePdf({
+      invoiceNumber: invoice.invoiceNumber,
+      invoiceDate: invoice.createdAt,
+      gstType: invoice.gstType,
+      taxableValue: Number(invoice.taxableValue),
+      grandTotal: Number(invoice.grandTotal),
+      amountInWords: invoice.amountInWords,
+      lines,
+      company: {
+        name: snapshot.name ?? 'Rosal Safety Private Limited',
+        gstin: snapshot.gstin,
+        factoryAddress: snapshot.address,
+        officeAddress: 'officeAddress' in snapshot ? snapshot.officeAddress : current?.officeAddress,
+        udyamNumber: snapshot.udyamNumber,
+        panNumber: snapshot.panNumber,
+        bankName: snapshot.bankName,
+        bankAccountNo: snapshot.bankAccountNo,
+        bankIFSC: snapshot.bankIFSC,
+        bankBranch: snapshot.bankBranch,
+        authorisedSignatory: snapshot.authorisedSignatory,
+        declaration: 'declaration' in snapshot ? snapshot.declaration : current?.declaration,
+      },
+      buyer: {
+        name: invoice.buyerName,
+        address: invoice.buyerAddress,
+        gstin: invoice.buyerGstin,
+        state: invoice.buyerState,
+        contact: invoice.buyerContact,
+      },
+      consignee: {
+        name: invoice.consigneeName,
+        address: invoice.consigneeAddress,
+        gstin: invoice.consigneeGstin,
+        state: invoice.consigneeState,
+        contact: invoice.consigneeContact,
+      },
+      salesPerson: seller ? { name: `${seller.firstName} ${seller.lastName}`.trim(), phone: seller.phone, email: seller.email } : null,
+      modeOfPayment: pi?.modeOfPayment,
+      piNumber: pi?.piNumber,
+      orderNumber: invoice.bill.order.orderNumber,
+      dispatchDocNo: invoice.dispatchDocNo,
+      eWayBillNo: invoice.eWayBillNo,
+      transporterName: invoice.transporterName,
+      termsOfDelivery: invoice.termsOfDelivery,
+      remarks: invoice.remarks,
+    });
+
+    return { fileName: `${invoice.invoiceNumber.replace(/[^A-Za-z0-9._-]/g, '_')}.pdf`, pdf };
   }
 }

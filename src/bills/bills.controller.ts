@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { BillStatus, UserRole } from '@prisma/client';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { BillsService } from './bills.service';
@@ -21,8 +21,10 @@ export class BillsController {
     @CurrentUser() user: AuthenticatedUser,
     @Query('search') search?: string,
     @Query('page') page?: string,
+    @Query('status') status?: string,
   ) {
-    return this.billsService.findMany(user, { search, page: page ? Number(page) : 1 });
+    const statusFilter = status && (Object.values(BillStatus) as string[]).includes(status) ? (status as BillStatus) : undefined;
+    return this.billsService.findMany(user, { search, page: page ? Number(page) : 1, status: statusFilter });
   }
 
   @Roles(UserRole.SELLER, UserRole.ACCOUNTS, UserRole.ADMIN)

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { SalesOrderStatus } from '@prisma/client';
+import { BillStatus, SalesOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBillDto } from './dto/create-bill.dto';
 import { OrderEventsService } from '../order-events/order-events.service';
@@ -103,19 +103,24 @@ export class BillsService {
   }
 
   /** Accounts: shared inbox, ALL sellers' bills together, no per-seller filter. */
-  async findMany(user: AuthenticatedUser, params: { search?: string; page?: number }) {
-    const { search, page = 1 } = params;
+  async findMany(user: AuthenticatedUser, params: { search?: string; page?: number; status?: BillStatus }) {
+    const { search, page = 1, status } = params;
     const pageSize = 10;
 
     const where: any = {};
     if (user.role === 'SELLER') {
       where.createdBySellerId = user.id;
     }
-    // ACCOUNTS/ADMIN: no filter — shared inbox across all sellers
+    // ACCOUNTS/ADMIN: no seller filter — shared inbox across all sellers.
+    // PENDING = still waiting for an invoice; INVOICED = done.
+    if (status) where.status = status;
     if (search) {
       where.OR = [
         { client: { firstName: { contains: search, mode: 'insensitive' } } },
         { client: { lastName: { contains: search, mode: 'insensitive' } } },
+        { order: { orderNumber: { contains: search, mode: 'insensitive' } } },
+        { createdBySeller: { firstName: { contains: search, mode: 'insensitive' } } },
+        { createdBySeller: { lastName: { contains: search, mode: 'insensitive' } } },
       ];
     }
 
@@ -129,6 +134,7 @@ export class BillsService {
           client: true,
           order: { select: { orderNumber: true, sellerId: true } },
           createdBySeller: { select: { firstName: true, lastName: true } },
+          invoice: { select: { id: true, invoiceNumber: true, createdAt: true } },
         },
       }),
       this.prisma.bill.count({ where }),
@@ -148,10 +154,13 @@ export class BillsService {
       include: {
         client: true,
         lineItems: { include: { product: true } },
-        order: true,
+        // The PI carries transport type (Terms of Delivery default) and ship-to.
+        order: { include: { proformaInvoice: { include: { transport: true } } } },
         createdBySeller: {
           select: { id: true, firstName: true, lastName: true, employeeCode: true },
         },
+        // Present once Accounts has invoiced this bill — the UI must not offer a second one.
+        invoice: { select: { id: true, invoiceNumber: true, createdAt: true, grandTotal: true } },
       },
     });
     if (!bill) throw new NotFoundException('Bill not found');

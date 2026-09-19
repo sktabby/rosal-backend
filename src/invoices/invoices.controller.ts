@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, StreamableFile } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -26,7 +26,11 @@ export class InvoicesController {
   }
 
   @Get(':id/pdf')
-  getPdf(@Param('id') id: string) {
-    return this.invoicesService.getPdfUrl(id);
+  async getPdf(@Param('id') id: string): Promise<StreamableFile> {
+    const { fileName, pdf } = await this.invoicesService.renderPdf(id);
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: `inline; filename="${fileName}"`,
+    });
   }
 }
