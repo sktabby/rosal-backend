@@ -28,7 +28,7 @@ export class FactoryUnitsService {
 
     const unit = await this.prisma.factoryUnit.create({
       data: dto,
-      include: { assignedDispatcher: { select: { firstName: true, lastName: true, employeeCode: true } } },
+      include: { assignedDispatcher: { select: { id: true, firstName: true, lastName: true, employeeCode: true, deletedAt: true } } },
     });
 
     await this.orderEvents.log({
@@ -53,7 +53,7 @@ export class FactoryUnitsService {
         skip: (page - 1) * pageSize,
         take: pageSize,
         orderBy: { createdAt: 'desc' },
-        include: { assignedDispatcher: { select: { firstName: true, lastName: true, employeeCode: true } } },
+        include: { assignedDispatcher: { select: { id: true, firstName: true, lastName: true, employeeCode: true, deletedAt: true } } },
       }),
       this.prisma.factoryUnit.count({ where }),
     ]);
@@ -63,7 +63,7 @@ export class FactoryUnitsService {
   findOne(id: string) {
     return this.prisma.factoryUnit.findUniqueOrThrow({
       where: { id },
-      include: { assignedDispatcher: { select: { firstName: true, lastName: true, employeeCode: true } } },
+      include: { assignedDispatcher: { select: { id: true, firstName: true, lastName: true, employeeCode: true, deletedAt: true } } },
     });
   }
 
