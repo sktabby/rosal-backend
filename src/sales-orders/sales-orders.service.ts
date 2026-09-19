@@ -167,7 +167,9 @@ export class SalesOrdersService {
         skip: (page - 1) * pageSize,
         take: pageSize,
         orderBy: { createdAt: 'desc' },
-        include: { proformaInvoice: { include: { client: true } }, factoryUnit: true },
+        // bill tells the seller app an order is already billed (status stays DISPATCHED
+        // until Accounts raises the invoice), so it stops offering Generate Bill.
+        include: { proformaInvoice: { include: { client: true } }, factoryUnit: true, bill: { select: { id: true, createdAt: true } } },
       }),
       this.prisma.salesOrder.count({ where }),
     ]);
@@ -180,6 +182,7 @@ export class SalesOrdersService {
       where: { id },
       include: {
         proformaInvoice: { include: { client: true, transport: true } },
+        bill: { select: { id: true, createdAt: true } },
         factoryUnit: {
           include: {
             assignedDispatcher: {
@@ -223,7 +226,7 @@ export class SalesOrdersService {
       actorId: dispatcher.id,
     });
 
-    this.realtime.emitOrderAccepted(order.sellerId, id, { orderId: id, status: updated.status });
+    this.realtime.emitOrderAccepted(order.sellerId, id, { orderId: id, orderNumber: order.orderNumber, status: updated.status });
     return updated;
   }
 
@@ -246,7 +249,7 @@ export class SalesOrdersService {
     });
 
     // FCM "please bill it" push would fire alongside this in production.
-    this.realtime.emitOrderCompleted(order.sellerId, id, { orderId: id, status: updated.status });
+    this.realtime.emitOrderCompleted(order.sellerId, id, { orderId: id, orderNumber: order.orderNumber, status: updated.status });
     return updated;
   }
 
@@ -268,7 +271,7 @@ export class SalesOrdersService {
       actorId: dispatcher.id,
     });
 
-    this.realtime.emitOrderRejected(order.sellerId, id, { orderId: id, status: updated.status });
+    this.realtime.emitOrderRejected(order.sellerId, id, { orderId: id, orderNumber: order.orderNumber, status: updated.status });
     return updated;
   }
 
@@ -322,7 +325,7 @@ export class SalesOrdersService {
       actorId: seller.id,
     });
 
-    this.realtime.emitOrderCancelled(order.factoryUnitId, { orderId: id, status: updated.status });
+    this.realtime.emitOrderCancelled(order.factoryUnitId, { orderId: id, orderNumber: order.orderNumber, status: updated.status });
     return updated;
   }
 }
