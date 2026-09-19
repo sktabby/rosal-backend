@@ -42,4 +42,12 @@ export class UpdateCompanySettingsDto {
   @IsOptional()
   @IsString()
   authorisedSignatory?: string;
+
+  @IsOptional()
+  @IsString()
+  officeAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  declaration?: string;
 }

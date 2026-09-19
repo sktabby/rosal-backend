@@ -195,6 +195,11 @@ model CompanySettings {
   bankBranch          String?
   authorisedSignatory String? // name shown under the digital signature line
 
+  // PI PDF header: `address` above is the factory; this is the head office.
+  officeAddress       String?
+  // Declaration printed on the PI — one point per line.
+  declaration         String?
+
   updatedAt DateTime @updatedAt
 }
 

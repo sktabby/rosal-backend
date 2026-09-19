@@ -44,18 +44,27 @@ async function main() {
         gstin: '27AANCR7712A1ZF',
         address:
           'Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302, Maharashtra',
-        // v1.1 — placeholders so Invoice generation is testable end-to-end
-        // immediately; replace with real values via Admin > Company Settings.
+        // Real letterhead details from the approved PI template; editable via
+        // Admin > Company Settings.
         udyamNumber: 'UDYAM-MH-18-0365859',
         panNumber: 'AANCR7712A',
-        bankName: 'State Bank of India',
-        bankAccountNo: '00000000000000',
-        bankIFSC: 'SBIN0000000',
-        bankBranch: 'Bhiwandi Branch',
+        bankName: 'State Bank of India CC A/C 1051',
+        bankAccountNo: '45303521051',
+        bankIFSC: 'SBIN0015781',
+        bankBranch: 'SME BORIVALI',
         authorisedSignatory: 'Root Admin',
+        officeAddress:
+          '703 & 704, 7th Floor Kushal Point, Near Ghatkopar Metro Station – Ghatkopar West, Mumbai - 400086',
+        declaration: [
+          'We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.',
+          'Price is Ex-Factory, transport and other charges applicable.',
+          "Transport damage is at customer's Risk.",
+          'If payment is not made on due date Interest @ 2% p.m is applicable.',
+          'Damage in product to be communicated in 2 days of receipt of material and the same to be returned to factory in 2 days of receipts.',
+        ].join('\n'),
       },
     });
-    console.log('✔ CompanySettings singleton created (v1.1 fields are placeholders — update via Company Settings)');
+    console.log('✔ CompanySettings singleton created');
   }
 
   // ── One demo account per role ──────────────────────────────────────
