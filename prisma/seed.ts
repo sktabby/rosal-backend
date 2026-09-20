@@ -46,7 +46,7 @@ async function main() {
         name: 'Rosal Safety Private Limited',
         gstin: '27AANCR7712A1ZF',
         address:
-          'Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302, Maharashtra',
+          'Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302',
         // Real letterhead details from the approved PI template; editable via
         // Admin > Company Settings.
         udyamNumber: 'UDYAM-MH-18-0365859',
@@ -117,7 +117,7 @@ async function main() {
         name: 'Bhiwandi Unit 1',
         assignedDispatcherId: dispatcher.id,
         // v1.1 — used as the Invoice's "Dispatch From" address
-        address: 'Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302, Maharashtra',
+        address: 'Godown 1876, Ram Avtar Compound, Shelar Road, Bhiwandi, Thane – 421302',
       },
     });
     console.log('✔ FactoryUnit "Bhiwandi Unit 1" created, assigned to DISPATCH-0001');

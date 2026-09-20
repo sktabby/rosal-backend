@@ -75,8 +75,11 @@ export class AuthService {
 
   /** Step 1: employeeCode + password -> triggers one shared OTP to email + phone. */
   async login(dto: LoginDto) {
+    // Employee Codes are always stored/typed in uppercase; normalize defensively so a
+    // client that doesn't force-uppercase its input (or an older app build) still works.
+    const employeeCode = dto.employeeCode.trim().toUpperCase();
     const user = await this.prisma.user.findUnique({
-      where: { employeeCode: dto.employeeCode },
+      where: { employeeCode },
     });
 
     if (!user || user.deletedAt || user.status !== 'ACTIVE') {
@@ -102,7 +105,8 @@ export class AuthService {
    * via @Throttle on the controller; also enforces a max-resends-per-login-
    * attempt ceiling here so a stuck OTP flow can't be resent indefinitely.
    */
-  async resendOtp(employeeCode: string) {
+  async resendOtp(employeeCodeInput: string) {
+    const employeeCode = employeeCodeInput.trim().toUpperCase();
     // Same generic message on every path below (missing account, inactive account,
     // AND rate-limited account) — a distinct message/status on any one of them would
     // let a caller distinguish "this employee code exists" from "it doesn't" by
@@ -164,8 +168,9 @@ export class AuthService {
 
   /** Step 2: OTP entry -> JWT + resolved role. */
   async verifyOtp(dto: VerifyOtpDto) {
+    const employeeCode = dto.employeeCode.trim().toUpperCase();
     const user = await this.prisma.user.findUnique({
-      where: { employeeCode: dto.employeeCode },
+      where: { employeeCode },
       include: { assignedFactoryUnit: true },
     });
     // Re-checked here: the account may have been deactivated between the password step and the OTP.

@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
-import { generateDisplayId } from '../common/utils/id-generator.util';
+import { assertValidEmployeeCode, generateDisplayId } from '../common/utils/id-generator.util';
 import { generateTemporaryPassword } from '../common/utils/password-generator.util';
 import { OtpDeliveryService } from '../auth/otp-delivery.service';
 import { OrderEventsService } from '../order-events/order-events.service';
@@ -20,7 +20,7 @@ export class UsersService {
 
   /** Uniqueness must be checked against FULL history, incl. soft-deleted users — codes are never reused. */
   async checkCodeAvailable(code: string) {
-    const existing = await this.prisma.user.findUnique({ where: { employeeCode: code } });
+    const existing = await this.prisma.user.findUnique({ where: { employeeCode: code.trim().toUpperCase() } });
     return { available: !existing };
   }
 
@@ -54,6 +54,11 @@ export class UsersService {
 
   async create(dto: CreateUserDto, actorId: string) {
     await this.verifyCaptcha(dto.captchaToken);
+
+    // Canonical form is always uppercase — the website constructs it that way already,
+    // but this is what actually enforces it against any other caller of this endpoint.
+    dto.employeeCode = dto.employeeCode.trim().toUpperCase();
+    assertValidEmployeeCode(dto.employeeCode, dto.role);
 
     const existing = await this.prisma.user.findUnique({
       where: { employeeCode: dto.employeeCode },

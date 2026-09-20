@@ -1,11 +1,36 @@
+import { BadRequestException } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+
 /**
  * Generated display ID = firstName + last 5 digits of employeeCode.
- * e.g. firstName "Aman", employeeCode "SELLER-27891" -> "AMAN-27891"
+ * e.g. firstName "Aman", employeeCode "RS0001S" -> "AMAN-00001"
  */
 export function generateDisplayId(firstName: string, employeeCode: string): string {
   const digitsOnly = employeeCode.replace(/\D/g, '');
   const last5 = digitsOnly.slice(-5).padStart(5, '0');
   return `${firstName.toUpperCase().replace(/\s+/g, '')}-${last5}`;
+}
+
+/**
+ * Employee Code format: RS + 4-digit number + one role letter, e.g. "RS0001S".
+ * The admin only ever types the number; the RS prefix and role letter are
+ * always applied automatically (by the website form, and re-checked here).
+ * ADMIN accounts are seeded directly and never created through this format.
+ */
+export const EMPLOYEE_CODE_ROLE_SUFFIX: Partial<Record<UserRole, string>> = {
+  [UserRole.SELLER]: 'S',
+  [UserRole.DISPATCHER]: 'D',
+  [UserRole.ACCOUNTS]: 'A',
+};
+
+/** Throws if `code` isn't RS + 4 digits + the letter for `role` (skipped for ADMIN). */
+export function assertValidEmployeeCode(code: string, role: UserRole): void {
+  const suffix = EMPLOYEE_CODE_ROLE_SUFFIX[role];
+  if (!suffix) return; // ADMIN — not created via this format
+  const pattern = new RegExp(`^RS\\d{4}${suffix}$`);
+  if (!pattern.test(code)) {
+    throw new BadRequestException(`Employee Code must be in the format RS0000${suffix} for this role`);
+  }
 }
 
 /** Current Indian financial year label, e.g. "26-27" for FY 2026-27 (Apr–Mar). */
