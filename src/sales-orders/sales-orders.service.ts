@@ -253,15 +253,31 @@ export class SalesOrdersService {
     return updated;
   }
 
+  /**
+   * Dispatcher-only, while the order is still Pending or Processing. Sets REJECTED and
+   * unlocks the source PI, same as a seller cancellation — a rejected order is just as
+   * dead as a cancelled one, and the seller must be able to edit/recreate the PI rather
+   * than have it stuck showing Confirmed with no order and no way back into it.
+   */
   async reject(id: string, dispatcher: AuthenticatedUser) {
     const order = await this.assertDispatcherOwnsOrder(id, dispatcher);
     if (order.status !== SalesOrderStatus.PENDING && order.status !== SalesOrderStatus.PROCESSING) {
       throw new BadRequestException('This order can no longer be rejected');
     }
 
-    const updated = await this.prisma.salesOrder.update({
-      where: { id },
-      data: { status: SalesOrderStatus.REJECTED, rejectedAt: new Date() },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.salesOrder.updateMany({
+        where: { id, status: { in: [SalesOrderStatus.PENDING, SalesOrderStatus.PROCESSING] } },
+        data: { status: SalesOrderStatus.REJECTED, rejectedAt: new Date() },
+      });
+      if (count === 0) {
+        throw new BadRequestException('This order can no longer be rejected');
+      }
+      await tx.proformaInvoice.update({
+        where: { id: order.piId },
+        data: { editLocked: false },
+      });
+      return tx.salesOrder.findUniqueOrThrow({ where: { id } });
     });
 
     await this.orderEvents.log({
