@@ -9,12 +9,17 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreatePiDto } from './dto/create-pi.dto';
 import { UpdatePiDto } from './dto/update-pi.dto';
 import { OrderEventsService } from '../order-events/order-events.service';
+import { SalesOrdersService } from '../sales-orders/sales-orders.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { buildPiNumber, currentFinancialYearLabel } from '../common/utils/id-generator.util';
 
 @Injectable()
 export class ProformaInvoicesService {
-  constructor(private prisma: PrismaService, private orderEvents: OrderEventsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private orderEvents: OrderEventsService,
+    private salesOrders: SalesOrdersService,
+  ) {}
 
   async create(dto: CreatePiDto, seller: AuthenticatedUser) {
     // Ownership check: seller may only create PIs for clients assigned to them
@@ -125,6 +130,7 @@ export class ProformaInvoicesService {
         sellerId: seller.id,
         clientId,
         editLocked: false,
+        salesOrders: { none: { alterStartedAt: { not: null } } },
         status: { notIn: [PiStatus.CANCELLED, PiStatus.ARCHIVED] },
         createdAt: { gte: cutoff },
       },
@@ -183,6 +189,9 @@ export class ProformaInvoicesService {
       action: 'edited',
       actorId: seller.id,
     });
+
+    // If this edit was altering an order, send that order (same number) back to the dispatcher.
+    await this.salesOrders.resubmitAlteredOrder(id, seller.id);
 
     return updated;
   }

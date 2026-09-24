@@ -7,6 +7,8 @@ import {
 import { BillStatus, SalesOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBillDto } from './dto/create-bill.dto';
+import { SubmitLrDto } from './dto/submit-lr.dto';
+import { SaveTcDto } from './dto/save-tc.dto';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -168,5 +170,56 @@ export class BillsService {
       throw new ForbiddenException();
     }
     return bill;
+  }
+
+  private async ownBill(id: string, seller: AuthenticatedUser) {
+    const bill = await this.prisma.bill.findUnique({ where: { id }, include: { order: true } });
+    if (!bill) throw new NotFoundException('Bill not found');
+    if (bill.createdBySellerId !== seller.id) throw new ForbiddenException();
+    return bill;
+  }
+
+  /**
+   * Seller: record the Lorry Receipt once Accounts has invoiced the bill. This is what moves
+   * the order to Completed on the dispatcher's screen. Final: it can be submitted only once.
+   */
+  async submitLr(id: string, dto: SubmitLrDto, seller: AuthenticatedUser) {
+    const bill = await this.ownBill(id, seller);
+    if (bill.status !== BillStatus.INVOICED) {
+      throw new BadRequestException('The LR can be added once Accounts has raised the invoice.');
+    }
+    if (bill.lrSubmittedAt) throw new BadRequestException('The LR has already been submitted.');
+    const lrNumber = dto.lrNumber.trim();
+    if (!lrNumber) throw new BadRequestException('Enter the LR number.');
+
+    await this.prisma.bill.update({ where: { id }, data: { lrNumber, lrSubmittedAt: new Date() } });
+    await this.orderEvents.log({ entityType: 'Bill', entityId: id, action: 'lr_submitted', actorId: seller.id });
+    this.realtime.emitOrderUpdated(bill.order.factoryUnitId, {
+      orderId: bill.orderId,
+      orderNumber: bill.order.orderNumber,
+      status: bill.order.status,
+    });
+    return this.findOne(id, seller);
+  }
+
+  /** Seller: save serial + batch numbers per product for the Test Certificate. Repeatable. */
+  async saveTc(id: string, dto: SaveTcDto, seller: AuthenticatedUser) {
+    const bill = await this.ownBill(id, seller);
+    if (!bill.lrSubmittedAt) throw new BadRequestException('Submit the LR before generating the TC.');
+    const lineItems = await this.prisma.billLineItem.findMany({ where: { billId: id }, select: { id: true } });
+    const valid = new Set(lineItems.map((l) => l.id));
+    if (dto.items.some((i) => !valid.has(i.lineItemId))) {
+      throw new BadRequestException('One or more items do not belong to this bill.');
+    }
+    await this.prisma.$transaction(
+      dto.items.map((i) =>
+        this.prisma.billLineItem.update({
+          where: { id: i.lineItemId },
+          data: { serialNumber: i.serialNumber?.trim() || null, batchNumber: i.batchNumber?.trim() || null },
+        }),
+      ),
+    );
+    await this.orderEvents.log({ entityType: 'Bill', entityId: id, action: 'tc_saved', actorId: seller.id });
+    return this.findOne(id, seller);
   }
 }

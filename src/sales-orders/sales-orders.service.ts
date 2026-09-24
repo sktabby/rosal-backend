@@ -37,6 +37,9 @@ export class SalesOrdersService {
     if (pi.editLocked) {
       throw new BadRequestException('This PI already has an active order');
     }
+    if (await this.prisma.salesOrder.count({ where: { piId: pi.id, alterStartedAt: { not: null } } })) {
+      throw new BadRequestException('This PI belongs to an order being altered. Finish or cancel that order first.');
+    }
     if (pi.status !== PiStatus.DRAFT && pi.status !== PiStatus.CONFIRMED) {
       // CONFIRMED case covers cancel-then-recreate: PI stays CONFIRMED conceptually
       // once it's had an order; what matters is editLocked, checked above.
@@ -72,6 +75,7 @@ export class SalesOrdersService {
           piId: pi.id,
           lineItemsSnapshot,
           factoryUnitId: dto.factoryUnitId,
+          dispatchFrom: dto.dispatchFrom?.trim() || null,
           sellerId: seller.id,
           status: SalesOrderStatus.PENDING,
         },
@@ -123,9 +127,10 @@ export class SalesOrdersService {
       status?: SalesOrderStatus | SalesOrderStatus[];
       page?: number;
       history?: boolean;
+      lr?: 'submitted' | 'pending';
     },
   ) {
-    const { search, status, page = 1, history = false } = params;
+    const { search, status, page = 1, history = false, lr } = params;
     const pageSize = 10;
 
     const where: any = {};
@@ -136,7 +141,11 @@ export class SalesOrdersService {
         return { items: [], total: 0, page, pageSize };
       }
       where.factoryUnitId = user.assignedFactoryUnitId;
+      where.alterStartedAt = null; // orders being altered are hidden until resubmitted
     }
+    // Dispatcher tabs: LR submitted = Completed, otherwise still awaiting the LR.
+    if (lr === 'submitted') where.bill = { lrSubmittedAt: { not: null } };
+    else if (lr === 'pending') where.NOT = { bill: { lrSubmittedAt: { not: null } } };
     if (status) where.status = Array.isArray(status) ? { in: status } : status;
     if (search) {
       where.orderNumber = { contains: search, mode: 'insensitive' };
@@ -169,7 +178,7 @@ export class SalesOrdersService {
         orderBy: { createdAt: 'desc' },
         // bill tells the seller app an order is already billed (status stays DISPATCHED
         // until Accounts raises the invoice), so it stops offering Generate Bill.
-        include: { proformaInvoice: { include: { client: true } }, factoryUnit: true, bill: { select: { id: true, createdAt: true } } },
+        include: { proformaInvoice: { include: { client: true } }, factoryUnit: true, bill: { select: { id: true, createdAt: true, status: true, lrNumber: true, lrSubmittedAt: true } } },
       }),
       this.prisma.salesOrder.count({ where }),
     ]);
@@ -182,7 +191,8 @@ export class SalesOrdersService {
       where: { id },
       include: {
         proformaInvoice: { include: { client: true, transport: true } },
-        bill: { select: { id: true, createdAt: true } },
+        bill: { select: { id: true, createdAt: true, status: true, lrNumber: true, lrSubmittedAt: true } },
+        seller: { select: { id: true, firstName: true, lastName: true, employeeCode: true, phone: true, email: true } },
         factoryUnit: {
           include: {
             assignedDispatcher: {
@@ -205,7 +215,85 @@ export class SalesOrdersService {
   private async assertDispatcherOwnsOrder(orderId: string, user: AuthenticatedUser) {
     const order = await this.prisma.salesOrder.findUniqueOrThrow({ where: { id: orderId } });
     if (order.factoryUnitId !== user.assignedFactoryUnitId) throw new ForbiddenException();
+    if (order.alterStartedAt) {
+      throw new BadRequestException('The seller is altering this order. Wait for the updated order.');
+    }
     return order;
+  }
+
+  /**
+   * Seller: start altering an order that hasn't been dispatched. The order keeps its number;
+   * its PI is unlocked so it can be edited, and the dispatcher is blocked until the seller
+   * saves the PI (see resubmitAlteredOrder). Cancelling instead frees the PI for a new order.
+   */
+  async alter(id: string, seller: AuthenticatedUser) {
+    const order = await this.prisma.salesOrder.findUniqueOrThrow({ where: { id } });
+    if (order.sellerId !== seller.id) throw new ForbiddenException();
+    const alterable: SalesOrderStatus[] = [SalesOrderStatus.PENDING, SalesOrderStatus.PROCESSING];
+    if (!alterable.includes(order.status)) {
+      throw new BadRequestException('This order can no longer be altered.');
+    }
+    if (order.alterStartedAt) return order; // already altering: just continue editing
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.salesOrder.updateMany({
+        where: { id, status: { in: alterable }, alterStartedAt: null },
+        data: { alterStartedAt: new Date() },
+      });
+      if (count === 0) throw new BadRequestException('This order can no longer be altered.');
+      await tx.proformaInvoice.update({ where: { id: order.piId }, data: { editLocked: false } });
+      return tx.salesOrder.findUniqueOrThrow({ where: { id } });
+    });
+
+    await this.orderEvents.log({ entityType: 'SalesOrder', entityId: id, action: 'alter_started', actorId: seller.id });
+    // Pull it out of the dispatcher's active queue until it's resubmitted.
+    this.realtime.emitOrderCancelled(order.factoryUnitId, { orderId: id, orderNumber: order.orderNumber, status: updated.status });
+    return updated;
+  }
+
+  /**
+   * Called after the seller saves the PI. If that PI's order is being altered, refreshes the
+   * order's line items from the PI, locks the PI again and sends the SAME order (same number)
+   * back to the dispatcher as Pending.
+   */
+  async resubmitAlteredOrder(piId: string, actorId: string) {
+    const order = await this.prisma.salesOrder.findFirst({
+      where: { piId, alterStartedAt: { not: null }, status: { in: [SalesOrderStatus.PENDING, SalesOrderStatus.PROCESSING] } },
+    });
+    if (!order) return null;
+
+    const pi = await this.prisma.proformaInvoice.findUniqueOrThrow({
+      where: { id: piId },
+      include: { lineItems: { include: { product: true } }, client: true },
+    });
+    const lineItemsSnapshot = pi.lineItems.map((li) => ({
+      productId: li.productId,
+      productName: li.product.name,
+      hsnCode: li.product.hsnCode,
+      unit: li.product.unit,
+      taxPercent: li.product.taxPercent,
+      brand: li.brand,
+      qty: li.qty,
+      price: li.price,
+      discountPercent: li.discountPercent,
+    }));
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.proformaInvoice.update({ where: { id: piId }, data: { editLocked: true } });
+      return tx.salesOrder.update({
+        where: { id: order.id },
+        data: { lineItemsSnapshot, alterStartedAt: null, status: SalesOrderStatus.PENDING, acceptedAt: null },
+      });
+    });
+
+    await this.orderEvents.log({ entityType: 'SalesOrder', entityId: order.id, action: 'altered', actorId });
+    this.realtime.emitOrderCreated(order.factoryUnitId, {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      clientName: `${pi.client.firstName} ${pi.client.lastName}`,
+      status: updated.status,
+    });
+    return updated;
   }
 
   async accept(id: string, dispatcher: AuthenticatedUser) {
@@ -320,6 +408,7 @@ export class SalesOrdersService {
           status: SalesOrderStatus.CANCELLED,
           cancelledBy: seller.id,
           cancelledAt: new Date(),
+          alterStartedAt: null,
         },
       });
       if (count === 0) {

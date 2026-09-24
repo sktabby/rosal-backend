@@ -167,6 +167,9 @@ model FactoryUnit {
   // default company address, when the order ships from this unit.
   address               String?
 
+  // Admin-defined "Dispatch From" locations; sellers pick one when creating an order.
+  dispatchFrom          String[]  @default([])
+
   // Enforces 1 dispatcher : 1 factory unit at the DB level
   assignedDispatcher    User      @relation("FactoryUnitDispatcher", fields: [assignedDispatcherId], references: [id])
   assignedDispatcherId  String    @unique
@@ -288,6 +291,12 @@ model SalesOrder {
   factoryUnit         FactoryUnit     @relation(fields: [factoryUnitId], references: [id])
   factoryUnitId       String
 
+  // Where this order ships from: one of the unit's dispatchFrom values or free text by the seller.
+  dispatchFrom        String?
+
+  // Set while the seller is editing the PI to alter this order; the dispatcher can't act on it meanwhile.
+  alterStartedAt      DateTime?
+
   seller              User            @relation("SellerOrders", fields: [sellerId], references: [id])
   sellerId            String
 
@@ -330,6 +339,11 @@ model Bill {
 
   invoice          Invoice?
 
+  // Lorry Receipt number, entered by the seller once the bill is invoiced. Submitting it
+  // moves the order to Completed on the dispatcher's screen.
+  lrNumber         String?
+  lrSubmittedAt    DateTime?
+
   createdAt        DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
@@ -351,6 +365,10 @@ model BillLineItem {
   taxPercent   Decimal @db.Decimal(5, 2)
   // v1.1: carried through from the PI line item so it reaches Invoice generation
   discountPercent Decimal @db.Decimal(5, 2) @default(0)
+
+  // Test Certificate details, filled in by the seller when generating the TC.
+  serialNumber String?
+  batchNumber  String?
 
   @@index([billId])
 }

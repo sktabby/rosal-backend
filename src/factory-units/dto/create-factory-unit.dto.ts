@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsArray, IsOptional, IsString } from 'class-validator';
 
 export class CreateFactoryUnitDto {
   @IsString()
@@ -11,4 +11,9 @@ export class CreateFactoryUnitDto {
   @IsOptional()
   @IsString()
   address?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  dispatchFrom?: string[];
 }

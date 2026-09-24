@@ -1,4 +1,4 @@
-import { IsString } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateOrderDto {
   @IsString()
@@ -6,4 +6,9 @@ export class CreateOrderDto {
 
   @IsString()
   factoryUnitId: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  dispatchFrom?: string;
 }

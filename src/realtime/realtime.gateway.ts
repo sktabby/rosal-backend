@@ -138,6 +138,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(`factoryUnit:${factoryUnitId}`).emit('order:created', payload);
   }
 
+  emitOrderUpdated(factoryUnitId: string, payload: unknown) {
+    this.server.to(`factoryUnit:${factoryUnitId}`).emit('order:updated', payload);
+  }
+
   emitOrderCancelled(factoryUnitId: string, payload: unknown) {
     this.server.to(`factoryUnit:${factoryUnitId}`).emit('order:cancelled', payload);
   }

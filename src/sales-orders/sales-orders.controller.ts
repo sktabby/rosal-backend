@@ -34,6 +34,7 @@ export class SalesOrdersController {
     @Query('page') page?: string,
     @Query('history') history?: string,
     @Query('archived') archived?: string,
+    @Query('lr') lr?: string,
   ) {
     const statusFilter = status
       ? (status.split(',') as SalesOrderStatus[]).length === 1
@@ -45,6 +46,7 @@ export class SalesOrdersController {
       status: statusFilter,
       page: page ? Number(page) : 1,
       history: history === 'true' || archived === 'true',
+      lr: lr === 'submitted' || lr === 'pending' ? lr : undefined,
     });
   }
 
@@ -70,6 +72,13 @@ export class SalesOrdersController {
   @Patch(':id/reject')
   reject(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.reject(id, user);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Roles(UserRole.SELLER)
+  @Patch(':id/alter')
+  alter(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.ordersService.alter(id, user);
   }
 
   @Throttle({ default: { limit: 20, ttl: 60_000 } })

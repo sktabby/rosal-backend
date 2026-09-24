@@ -42,16 +42,32 @@ export class DashboardService {
   /** Dispatcher Home: Pending / Processing counts scoped to their assigned Factory Unit. */
   async dispatcherSummary(dispatcher: AuthenticatedUser) {
     if (!dispatcher.assignedFactoryUnitId) {
-      return { pendingCount: 0, processingCount: 0 };
+      return { pendingCount: 0, processingCount: 0, dispatchCount: 0, completedCount: 0 };
     }
-    const [pendingCount, processingCount] = await Promise.all([
+    const shipped = { status: { in: [SalesOrderStatus.DISPATCHED, SalesOrderStatus.BILLED] } };
+    const [pendingCount, processingCount, dispatchCount, completedCount] = await Promise.all([
       this.prisma.salesOrder.count({
         where: { factoryUnitId: dispatcher.assignedFactoryUnitId, status: SalesOrderStatus.PENDING },
       }),
       this.prisma.salesOrder.count({
         where: { factoryUnitId: dispatcher.assignedFactoryUnitId, status: SalesOrderStatus.PROCESSING },
       }),
+      // Dispatch = shipped, LR not yet submitted; Completed = LR submitted by the seller.
+      this.prisma.salesOrder.count({
+        where: {
+          factoryUnitId: dispatcher.assignedFactoryUnitId,
+          ...shipped,
+          NOT: { bill: { lrSubmittedAt: { not: null } } },
+        },
+      }),
+      this.prisma.salesOrder.count({
+        where: {
+          factoryUnitId: dispatcher.assignedFactoryUnitId,
+          ...shipped,
+          bill: { lrSubmittedAt: { not: null } },
+        },
+      }),
     ]);
-    return { pendingCount, processingCount };
+    return { pendingCount, processingCount, dispatchCount, completedCount };
   }
 }
