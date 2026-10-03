@@ -20,6 +20,7 @@ import { RealtimeModule } from './realtime/realtime.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { SearchModule } from './search/search.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { LeadsModule } from './leads/leads.module';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -47,6 +48,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     UploadsModule,
     SearchModule,
     DashboardModule,
+    LeadsModule,
   ],
   providers: [
     // Every route requires a valid JWT by default; use @Public() to opt out

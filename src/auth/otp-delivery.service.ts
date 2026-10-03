@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
-import { Resend } from 'resend';
+import { MailService } from '../common/mail/mail.service';
 
 /**
  * Sends the SAME otp code to both the user's registered email and phone.
@@ -9,18 +8,13 @@ import { Resend } from 'resend';
  * as the default since it's the most common for Indian SMS + is straightforward
  * to wire up; MSG91/Textlocal are common India-specific alternatives.
  *
- * EMAIL TRANSPORT: Resend (HTTPS API) is used when RESEND_API_KEY is set,
- * otherwise this falls back to plain SMTP. Render's free instances block
- * outbound traffic to SMTP ports (25/465/587), so SMTP silently times out
- * there — Resend goes over 443 and is unaffected. Keeping the SMTP path means
- * local dev (and `npm run verify:smtp`) still works unchanged.
+ * Email delivery itself (Resend vs SMTP transport selection) lives in the
+ * shared MailService — see its header comment for why Resend is required
+ * on Render.
  */
 @Injectable()
 export class OtpDeliveryService {
   private readonly logger = new Logger(OtpDeliveryService.name);
-  private readonly resend?: Resend;
-  private readonly transporter?: nodemailer.Transporter;
-  private readonly mailFrom?: string;
   /**
    * LOCAL DEV ONLY. When true, sendOtp() prints the code to the server console
    * instead of emailing/SMSing it, so the login flow is testable without a
@@ -32,7 +26,7 @@ export class OtpDeliveryService {
    */
   private readonly otpDevMode: boolean;
 
-  constructor(private config: ConfigService) {
+  constructor(private config: ConfigService, private mail: MailService) {
     const devModeRequested = this.config.get<string>('OTP_DEV_MODE') === 'true';
     const isProduction = this.config.get<string>('NODE_ENV') === 'production';
     this.otpDevMode = devModeRequested && !isProduction;
@@ -47,88 +41,10 @@ export class OtpDeliveryService {
         'OTP_DEV_MODE is ON — OTP codes will be printed to this console and NOT emailed/texted. Never enable this in production.',
       );
     }
-
-    const resendApiKey = this.config.get<string>('RESEND_API_KEY');
-
-    /**
-     * MAIL_TRANSPORT explicitly picks the email provider:
-     *   'smtp'   -> always use SMTP, even if a Resend key is present
-     *   'resend' -> always use Resend
-     *   'auto'   -> (default) Resend when RESEND_API_KEY is set, else SMTP
-     *
-     * This exists so local dev can use SMTP without having to delete the
-     * Resend key from .env. Resend's sandbox only delivers to the account
-     * owner's address until a domain is verified, whereas SMTP can send
-     * anywhere — but SMTP ports are blocked on Render, which is why the
-     * deployed environment still wants Resend.
-     */
-    const transport = (this.config.get<string>('MAIL_TRANSPORT') ?? 'auto').toLowerCase();
-    const useResend =
-      transport === 'resend' || (transport === 'auto' && !!resendApiKey);
-
-    // MAIL_FROM is the provider-neutral name; SMTP_FROM is honoured as a
-    // fallback so existing .env files keep working. When sending over SMTP the
-    // envelope sender must match the authenticated SMTP account, so prefer
-    // SMTP_FROM in that case.
-    this.mailFrom = useResend
-      ? this.config.get<string>('MAIL_FROM') ?? this.config.get<string>('SMTP_FROM')
-      : this.config.get<string>('SMTP_FROM') ?? this.config.get<string>('MAIL_FROM');
-
-    if (useResend) {
-      if (!resendApiKey) {
-        this.logger.warn(
-          'MAIL_TRANSPORT=resend but RESEND_API_KEY is not set — falling back to SMTP.',
-        );
-      } else {
-        this.resend = new Resend(resendApiKey);
-        this.logger.log('Email transport: Resend (HTTPS API)');
-        return;
-      }
-    }
-
-    const port = Number(this.config.get<string>('SMTP_PORT'));
-    this.transporter = nodemailer.createTransport({
-      host: this.config.get<string>('SMTP_HOST'),
-      port,
-      secure: port === 465, // implicit TLS; port 587/25 use STARTTLS instead
-      auth: {
-        user: this.config.get<string>('SMTP_USER'),
-        pass: this.config.get<string>('SMTP_PASS'),
-      },
-    });
-    this.logger.log(
-      `Email transport: SMTP (${this.config.get<string>('SMTP_HOST')}:${port}) as ${this.mailFrom}`,
-    );
   }
 
-  /**
-   * Single send path for both transports. Throws on failure — callers decide
-   * whether that should be fatal (it never is for OTP/credential mail).
-   */
-  private async sendEmail(to: string, subject: string, text: string) {
-    if (!this.mailFrom) {
-      throw new Error('No sender configured — set MAIL_FROM (or SMTP_FROM)');
-    }
-
-    if (this.resend) {
-      // The Resend SDK resolves with { data, error } instead of rejecting,
-      // so a failed send looks like success unless error is checked.
-      const { error } = await this.resend.emails.send({
-        from: this.mailFrom,
-        to,
-        subject,
-        text,
-      });
-      if (error) {
-        throw new Error(`Resend rejected the message: ${error.name} — ${error.message}`);
-      }
-      return;
-    }
-
-    if (!this.transporter) {
-      throw new Error('No email transport configured — set RESEND_API_KEY or SMTP_*');
-    }
-    await this.transporter.sendMail({ from: this.mailFrom, to, subject, text });
+  private sendEmail(to: string, subject: string, text: string) {
+    return this.mail.send(to, subject, { text });
   }
 
   async sendOtp(params: {

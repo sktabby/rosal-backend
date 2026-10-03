@@ -7,11 +7,13 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { OtpDeliveryService } from './otp-delivery.service';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { MailModule } from '../common/mail/mail.module';
 
 @Module({
   imports: [
     PassportModule,
     RealtimeModule,
+    MailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
