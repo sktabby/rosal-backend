@@ -4,6 +4,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Roles(UserRole.ADMIN)
 @Controller()
@@ -55,7 +56,11 @@ export class UsersController {
   }
 
   @Post('users/:id/reset-password')
-  resetPassword(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.usersService.resetPassword(id, user.id);
+  resetPassword(
+    @Param('id') id: string,
+    @Body() dto: ResetPasswordDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.usersService.resetPassword(id, dto.newPassword, user.id);
   }
 }

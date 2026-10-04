@@ -3,7 +3,6 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { assertValidEmployeeCode, generateDisplayId } from '../common/utils/id-generator.util';
-import { generateTemporaryPassword } from '../common/utils/password-generator.util';
 import { OtpDeliveryService } from '../auth/otp-delivery.service';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { UserRole } from '@prisma/client';
@@ -170,18 +169,18 @@ export class UsersService {
   }
 
   /**
-   * Admin-triggered reset: generates a new temporary password, emails it to
-   * the user, and returns it once so the admin can relay it if delivery
-   * fails. Nothing is ever stored except the bcrypt hash — same as create.
+   * Admin-triggered reset: the admin sets the new password directly (no
+   * server-generated value), emails the user that it changed, and
+   * disconnects their live session. Nothing is ever stored except the
+   * bcrypt hash — same as create.
    */
-  async resetPassword(id: string, actorId: string) {
+  async resetPassword(id: string, newPassword: string, actorId: string) {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id } });
     if (user.deletedAt) {
       throw new BadRequestException('Cannot reset the password of a deleted user');
     }
 
-    const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await bcrypt.hash(newPassword, 10);
 
     await this.prisma.user.update({ where: { id }, data: { passwordHash } });
     this.realtime.disconnectUsers(id);
@@ -197,10 +196,10 @@ export class UsersService {
       email: user.email,
       firstName: user.firstName,
       employeeCode: user.employeeCode,
-      temporaryPassword,
+      newPassword,
     });
 
-    return { temporaryPassword };
+    return { message: 'Password reset' };
   }
 
   async softDelete(id: string, actorId: string) {
